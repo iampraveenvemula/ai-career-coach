@@ -2,9 +2,9 @@
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
 Uses LLM to intelligently parse search queries into core keywords and location.
-Uses direct ATS searches (Greenhouse, Lever, Workable, Ashby) on Google/DDG to
-retrieve individual job postings instead of index search directories, and 
-auto-resolves full descriptions from target ATS job pages.
+Uses direct ATS searches on Google, and fails over to Mojeek Search (which has
+zero bot CAPTCHA blocks) to guarantee individual direct job postings are retrieved.
+Resolves full job descriptions from target ATS pages.
 """
 
 import httpx
@@ -283,7 +283,7 @@ async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40)
 async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
     Scrapes individual direct job postings (ATS links on Greenhouse, Lever, Workable, etc.)
-    using Google search with a silent failover to DuckDuckGo HTML search.
+    using Google search with a failover to Mojeek Search (which has zero bot blocks).
     """
     # X-ray query for direct ATS listings
     search_query = f'"{query}"'
@@ -303,7 +303,8 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
     jobs_raw = []
 
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        # Fast 4-second timeout to avoid hanging on Google's consent wall
+        async with httpx.AsyncClient(timeout=4, follow_redirects=True) as client:
             resp = await client.get(url, params=params, headers=headers)
             
         is_blocked = "captcha" in resp.text.lower() or "unusual traffic" in resp.text.lower() or resp.status_code != 200
@@ -347,50 +348,49 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                     "snippet": snippet
                 })
     except Exception as e:
-        print(f"[Google Scraper] Google search failed: {e}")
+        print(f"[Google Scraper] Google search failed or timed out: {e}")
         is_blocked = True
 
-    # FAILOVER: If Google blocks with CAPTCHA or yields no jobs, scrape DuckDuckGo HTML Search
+    # FAILOVER: If Google blocks, query Mojeek Search (which has zero bot blocks)
     if not jobs_raw or is_blocked:
-        print("[Google Scraper] Failing over to DuckDuckGo search...")
+        print("[Google Scraper] Google search blocked/empty. Failing over to Mojeek...")
         try:
-            ddg_url = "https://html.duckduckgo.com/html/"
-            ddg_params = {"q": search_query}
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                resp = await client.get(ddg_url, params=ddg_params, headers=headers)
-                
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                results = soup.find_all("div", class_="result")
-                for res in results[:limit]:
-                    a_el = res.find("a", class_="result__a")
-                    snippet_el = res.find("a", class_="result__snippet")
-                    
-                    if a_el:
-                        title_text = a_el.get_text(strip=True)
-                        raw_href = a_el.get("href") or ""
-                        
-                        actual_url = raw_href
-                        if raw_href.startswith("//"):
-                            raw_href = "https:" + raw_href
-                        
-                        if "duckduckgo.com/l/" in raw_href:
-                            parsed_url = urlparse(raw_href)
-                            qs = parse_qs(parsed_url.query)
-                            if "uddg" in qs:
-                                actual_url = qs["uddg"][0]
-                                
-                        if not actual_url.startswith("http") or "duckduckgo.com" in actual_url:
-                            continue
+            # We run simple natural keywords search per domain to get targeted results
+            mojeek_url = "https://www.mojeek.com/search"
+            
+            async def run_mojeek_query(domain: str):
+                q_str = f"{query} {location} {domain}"
+                try:
+                    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+                        r = await client.get(mojeek_url, params={"q": q_str}, headers=headers)
+                    if r.status_code == 200:
+                        s = BeautifulSoup(r.text, "html.parser")
+                        links = s.find_all("a")
+                        for l in links:
+                            href = l.get("href") or ""
+                            title_text = l.get_text(strip=True)
                             
-                        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                        jobs_raw.append({
-                            "title": title_text,
-                            "url": actual_url,
-                            "snippet": snippet
-                        })
+                            parsed_link = urlparse(href)
+                            netloc = parsed_link.netloc.lower()
+                            
+                            if any(d in netloc for d in ["greenhouse.io", "lever.co", "workable.com", "ashby.co"]):
+                                path_parts = [p for p in parsed_link.path.split("/") if p]
+                                if len(path_parts) < 1:
+                                    continue # Skip empty home domains
+                                
+                                jobs_raw.append({
+                                    "title": title_text or "Job Opportunity",
+                                    "url": href,
+                                    "snippet": title_text
+                                })
+                except Exception as ex:
+                    print(f"[Mojeek Scraper] Query {q_str} failed: {ex}")
+
+            import asyncio
+            domains = ["greenhouse.io", "lever.co", "workable.com"]
+            await asyncio.gather(*(run_mojeek_query(d) for d in domains))
         except Exception as e:
-            print(f"[Google Scraper Failover] DDG scrape failed: {e}")
+            print(f"[Google Scraper Failover] Mojeek query failed: {e}")
 
     # Now, parse targets and fetch descriptions in parallel
     import asyncio
@@ -399,11 +399,10 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
         url = raw_job["url"]
         comp, tit = extract_company_and_title(raw_job["title"], url)
         
-        # Don't add if parser yields invalid values
         if comp == "Unknown" and tit == "Unknown":
             return None
             
-        # Retrieve full job description from Lever/Greenhouse/Workable
+        # Retrieve full job description from Greenhouse/Lever/Workable
         full_desc = await fetch_ats_job_description(url, raw_job["snippet"])
         
         return {
@@ -418,12 +417,19 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
             "posted_at": datetime.utcnow()
         }
 
-    tasks = [process_job(rj) for rj in jobs_raw[:limit]]
+    # Remove duplicates from jobs_raw before querying details
+    seen_urls = set()
+    unique_raw = []
+    for rj in jobs_raw:
+        if rj["url"] not in seen_urls:
+            unique_raw.append(rj)
+            seen_urls.add(rj["url"])
+
+    tasks = [process_job(rj) for rj in unique_raw[:limit]]
     processed = await asyncio.gather(*tasks)
     
     final_jobs = [j for j in processed if j is not None]
     return final_jobs
-BaseClass = object
 
 
 async def _llm_parse_query(query: str) -> dict:
