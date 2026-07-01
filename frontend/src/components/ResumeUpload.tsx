@@ -34,8 +34,8 @@ export function ResumeUpload() {
       setParsedData(data);
 
       // Persist the raw text so the Jobs tab can use it for tailoring
-      if (data.raw_text_preview) {
-        localStorage.setItem("resume_text", data.raw_text_preview);
+      if (data.raw_text) {
+        localStorage.setItem("resume_text", data.raw_text);
       }
     } catch (error) {
       console.error("Upload failed", error);

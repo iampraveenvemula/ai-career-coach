@@ -34,6 +34,7 @@ class Resume(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
     user_id = Column(String, ForeignKey("users.id"))
     original_file_url = Column(String)
+    raw_text = Column(Text, nullable=True)
     parsed_skills = Column(JSON)
     parsed_experience = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -311,31 +311,39 @@ export function AnalyticsDashboard() {
           </div>
 
           <div className="space-y-3.5">
-            {DEFAULT_SKILL_GAPS.map((s, i) => (
-              <div key={i} className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-slate-600 truncate">{s.skill}</span>
-                  <span className={`font-bold tabular-nums ${s.coverage < 40 ? "text-red-500" : s.coverage < 60 ? "text-amber-600" : "text-emerald-600"}`}>
-                    {s.coverage}%
-                  </span>
+            {data?.skill_gaps && data.skill_gaps.length > 0 ? (
+              data.skill_gaps.map((s: any, i: number) => (
+                <div key={i} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-slate-600 truncate">{s.skill}</span>
+                    <span className={`font-bold tabular-nums ${s.coverage < 40 ? "text-red-500" : s.coverage < 60 ? "text-amber-600" : "text-emerald-600"}`}>
+                      {s.coverage}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${s.coverage}%` }}
+                      transition={{ duration: 0.8, ease: "easeOut", delay: 0.55 + i * 0.06 }}
+                      className={`h-full rounded-full ${
+                        s.coverage < 40 ? "bg-red-400" : s.coverage < 60 ? "bg-amber-400" : "bg-emerald-400"
+                      }`}
+                    />
+                  </div>
                 </div>
-                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: `${s.coverage}%` }}
-                    transition={{ duration: 0.8, ease: "easeOut", delay: 0.55 + i * 0.06 }}
-                    className={`h-full rounded-full ${
-                      s.coverage < 40 ? "bg-red-400" : s.coverage < 60 ? "bg-amber-400" : "bg-emerald-400"
-                    }`}
-                  />
-                </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <p className="text-xs text-slate-400 text-center py-6">No missing skills detected! Your resume matches perfectly.</p>
+            )}
           </div>
 
           <div className="mt-4 pt-4 border-t border-slate-100">
             <p className="text-xs text-slate-500 leading-relaxed">
-              💡 <span className="font-medium text-slate-700">Focus on Kubernetes & JAX</span> — they appear in 72% of your target roles but score lowest in your resume.
+              💡 {data?.skill_gaps && data.skill_gaps.length > 0 ? (
+                <span>Focus on <span className="font-semibold text-slate-700">{data.skill_gaps[0].skill}</span> — it appears frequently in your target roles but is missing from your resume.</span>
+              ) : (
+                <span>Great work! Keep applying to roles that match your robust skill set.</span>
+              )}
             </p>
           </div>
         </motion.div>

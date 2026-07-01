@@ -11,11 +11,28 @@ router = APIRouter(
     tags=["Resume"]
 )
 
+def get_default_user(db: Session):
+    user = db.query(models.User).filter(models.User.id == "default-user").first()
+    if not user:
+        user = models.User(
+            id="default-user",
+            email="user@example.com",
+            name="Default User",
+            experience_years=3,
+            target_roles=["Software Engineer"],
+            target_locations=["Remote"]
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
+
 @router.post("/parse")
 async def parse_resume(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Upload a resume file (PDF/DOCX/TXT) and use an LLM to extract
     skills, experience, education and a professional summary.
+    Saves the parsed resume to the database.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -25,11 +42,30 @@ async def parse_resume(file: UploadFile = File(...), db: Session = Depends(get_d
         extracted_text = extract_text_from_file(contents, file.filename)
         parsed_data = extract_skills_from_text(extracted_text)
 
+        user = get_default_user(db)
+        
+        # Delete any existing resumes for default-user to keep it 1-to-1
+        db.query(models.Resume).filter(models.Resume.user_id == user.id).delete()
+        
+        db_resume = models.Resume(
+            user_id=user.id,
+            original_file_url=file.filename,
+            raw_text=extracted_text,
+            parsed_skills=parsed_data.get("skills", []),
+            parsed_experience={
+                "education": parsed_data.get("education", "Not specified"),
+                "summary": parsed_data.get("summary", ""),
+                "years_experience": parsed_data.get("years_experience", 0)
+            }
+        )
+        db.add(db_resume)
+        db.commit()
+
         return {
             "status": "success",
             "filename": file.filename,
             "parsed_data": parsed_data,
-            "raw_text_preview": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text
+            "raw_text": extracted_text
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error parsing file: {str(e)}")
