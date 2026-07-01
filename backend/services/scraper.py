@@ -2,8 +2,9 @@
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
 Uses LLM to intelligently parse search queries into core keywords and location.
-Extracts posting dates, implements pagination, and provides a silent failover
-to DuckDuckGo HTML Search when Google CAPTCHAs blocks raw requests.
+Uses direct ATS searches (Greenhouse, Lever, Workable, Ashby) on Google/DDG to
+retrieve individual job postings instead of index search directories, and 
+auto-resolves full descriptions from target ATS job pages.
 """
 
 import httpx
@@ -65,6 +66,82 @@ def parse_relative_time(time_str: str) -> datetime:
     except Exception:
         pass
     return now
+
+
+def extract_company_and_title(title: str, url: str) -> tuple[str, str]:
+    """
+    Parses clean company name and job title from ATS urls and title tags.
+    """
+    company = "Unknown"
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    path_parts = [p for p in parsed.path.split("/") if p]
+    
+    if "lever.co" in netloc and len(path_parts) >= 1:
+        company = path_parts[0]
+    elif "greenhouse.io" in netloc and len(path_parts) >= 1:
+        company = path_parts[0]
+    elif "workable.com" in netloc and len(path_parts) >= 1:
+        company = path_parts[0]
+    elif "ashby.co" in netloc and len(path_parts) >= 1:
+        company = path_parts[0]
+        
+    company = company.replace("-", " ").title()
+    
+    clean_title = title
+    for prefix in ["Job Application for ", "Job Application - ", "Job Application: ", "Jobs at ", "Hiring: "]:
+        if clean_title.lower().startswith(prefix.lower()):
+            clean_title = clean_title[len(prefix):]
+            
+    if " at " in clean_title:
+        parts = clean_title.split(" at ")
+        clean_title = parts[0]
+        company = parts[1]
+            
+    return company.strip(), clean_title.strip()
+
+
+async def fetch_ats_job_description(url: str, default_desc: str = "") -> str:
+    """
+    Fetches the actual job description text directly from Greenhouse, Lever, Workable, etc.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                
+                # Check for standard ATS layout tags
+                main_content = None
+                if "lever.co" in url:
+                    main_content = soup.find("div", class_="section-wrapper") or soup.find("div", class_="content")
+                elif "greenhouse.io" in url:
+                    main_content = soup.find("div", id="main") or soup.find("div", id="content")
+                elif "workable.com" in url:
+                    main_content = soup.find("main") or soup.find("div", class_="job-section")
+                
+                target = main_content if main_content else soup.body
+                
+                if target:
+                    # Clean tags
+                    for el in target(["script", "style", "nav", "footer", "header"]):
+                        el.decompose()
+                    
+                    text = target.get_text(separator=" ")
+                    lines = (line.strip() for line in text.splitlines())
+                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                    clean_text = "\n".join(chunk for chunk in chunks if chunk)
+                    
+                    # Remove excessive headers/footers
+                    clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+                    if len(clean_text) > 100:
+                        return clean_text[:4000]
+    except Exception as e:
+        print(f"[ATS Scraper] Failed to fetch full description from {url}: {e}")
+    return default_desc
 
 
 async def scrape_remotive(query: str, location: str = "", limit: int = 30) -> list[dict]:
@@ -205,15 +282,15 @@ async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40)
 
 async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
-    Scrapes job listings from Google search results.
-    Uses class-agnostic h3/a parsing, and includes a silent failover to DuckDuckGo
-    HTML Search (which doesn't enforce CAPTCHAs) in case Google blocks the bot.
+    Scrapes individual direct job postings (ATS links on Greenhouse, Lever, Workable, etc.)
+    using Google search with a silent failover to DuckDuckGo HTML search.
     """
-    search_query = f"{query} jobs hiring"
+    # X-ray query for direct ATS listings
+    search_query = f'"{query}"'
     if location:
-        search_query = f"{query} jobs hiring in {location}"
+        search_query = f'"{query}" {location}'
+    search_query = f"{search_query} (site:greenhouse.io OR site:lever.co OR site:workable.com OR site:ashby.co)"
 
-    # Try Google Search first
     url = "https://www.google.com/search"
     params = {"q": search_query, "num": limit + 10}
     headers = {
@@ -223,7 +300,7 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
     }
 
     is_blocked = False
-    jobs = []
+    jobs_raw = []
 
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
@@ -249,39 +326,33 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                 if not href or not href.startswith("http") or "google.com" in href:
                     continue
                 
-                if any(kw in title_text.lower() for kw in ["job", "hiring", "career", "engineer", "scientist", "developer", "position", "vacancy", "apply"]):
-                    snippet = ""
-                    parent = h3.parent
-                    for _ in range(4):
-                        if parent:
-                            spans = parent.find_all("span")
-                            for s in spans:
-                                t = s.get_text(strip=True)
-                                if len(t) > 45 and t != title_text:
-                                    snippet = t
-                                    break
-                            if snippet:
+                # Fetch snippets
+                snippet = ""
+                parent = h3.parent
+                for _ in range(4):
+                    if parent:
+                        spans = parent.find_all("span")
+                        for s in spans:
+                            t = s.get_text(strip=True)
+                            if len(t) > 45 and t != title_text:
+                                snippet = t
                                 break
-                            parent = parent.parent
-                            
-                    jobs.append({
-                        "id": str(uuid.uuid4()),
-                        "title": title_text,
-                        "company": "Via Google Search",
-                        "location": location or "See listing",
-                        "description_text": snippet[:500] if snippet else title_text,
-                        "url": href,
-                        "salary_range": "Not disclosed",
-                        "source": "Google",
-                        "posted_at": datetime.utcnow()
-                    })
+                        if snippet:
+                            break
+                        parent = parent.parent
+                        
+                jobs_raw.append({
+                    "title": title_text,
+                    "url": href,
+                    "snippet": snippet
+                })
     except Exception as e:
-        print(f"[Google Scraper] HTTP/Parsing failed: {e}")
+        print(f"[Google Scraper] Google search failed: {e}")
         is_blocked = True
 
     # FAILOVER: If Google blocks with CAPTCHA or yields no jobs, scrape DuckDuckGo HTML Search
-    if not jobs or is_blocked:
-        print("[Google Scraper] Empty search or CAPTCHA detected. Failing over to DuckDuckGo search...")
+    if not jobs_raw or is_blocked:
+        print("[Google Scraper] Failing over to DuckDuckGo search...")
         try:
             ddg_url = "https://html.duckduckgo.com/html/"
             ddg_params = {"q": search_query}
@@ -299,7 +370,6 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                         title_text = a_el.get_text(strip=True)
                         raw_href = a_el.get("href") or ""
                         
-                        # Extract the actual job link out of DuckDuckGo redirect
                         actual_url = raw_href
                         if raw_href.startswith("//"):
                             raw_href = "https:" + raw_href
@@ -314,22 +384,46 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                             continue
                             
                         snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                        
-                        jobs.append({
-                            "id": str(uuid.uuid4()),
+                        jobs_raw.append({
                             "title": title_text,
-                            "company": "Via Google Search (DDG Failover)",
-                            "location": location or "See listing",
-                            "description_text": snippet[:500] if snippet else title_text,
                             "url": actual_url,
-                            "salary_range": "Not disclosed",
-                            "source": "Google",
-                            "posted_at": datetime.utcnow()
+                            "snippet": snippet
                         })
         except Exception as e:
             print(f"[Google Scraper Failover] DDG scrape failed: {e}")
 
-    return jobs[:limit]
+    # Now, parse targets and fetch descriptions in parallel
+    import asyncio
+    
+    async def process_job(raw_job: dict) -> dict | None:
+        url = raw_job["url"]
+        comp, tit = extract_company_and_title(raw_job["title"], url)
+        
+        # Don't add if parser yields invalid values
+        if comp == "Unknown" and tit == "Unknown":
+            return None
+            
+        # Retrieve full job description from Lever/Greenhouse/Workable
+        full_desc = await fetch_ats_job_description(url, raw_job["snippet"])
+        
+        return {
+            "id": str(uuid.uuid4()),
+            "title": tit,
+            "company": comp,
+            "location": location or "See listing",
+            "description_text": full_desc,
+            "url": url,
+            "salary_range": "Not disclosed",
+            "source": "Google",
+            "posted_at": datetime.utcnow()
+        }
+
+    tasks = [process_job(rj) for rj in jobs_raw[:limit]]
+    processed = await asyncio.gather(*tasks)
+    
+    final_jobs = [j for j in processed if j is not None]
+    return final_jobs
+BaseClass = object
 
 
 async def _llm_parse_query(query: str) -> dict:
