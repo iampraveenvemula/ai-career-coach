@@ -25,13 +25,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import resume, jobs, generate, ollama, interview
+from routers import resume, jobs, generate, ollama, interview, applications
 
 app.include_router(resume.router)
 app.include_router(jobs.router)
 app.include_router(generate.router)
 app.include_router(ollama.router)
 app.include_router(interview.router)
+app.include_router(applications.router)
 
 @app.get("/health")
 def health_check():

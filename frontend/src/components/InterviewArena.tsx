@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +70,14 @@ function SetupScreen({
   const [jd, setJd] = useState("");
   const [resume, setResume] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Auto-populate resume from localStorage if available
+  useEffect(() => {
+    const savedResume = localStorage.getItem("resume_text");
+    if (savedResume) {
+      setResume(savedResume);
+    }
+  }, []);
 
   const handleStart = async () => {
     if (!jd.trim()) return;

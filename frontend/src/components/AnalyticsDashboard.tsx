@@ -1,91 +1,33 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   TrendingUp, FileText, Briefcase, Award,
   Clock, CheckCircle2, XCircle, BarChart3,
-  ArrowUpRight, Target, Zap, Users,
+  ArrowUpRight, Target, Zap, Users, Loader2,
 } from "lucide-react";
+import { API_BASE_URL } from "@/lib/config";
 
 // ---------------------------------------------------------------------------
-// Mock analytics data — realistic snapshot of a job search campaign
+// Styling and Icon Configurations
 // ---------------------------------------------------------------------------
-const SUMMARY_STATS = [
-  {
-    id: "stat-applications",
-    label: "Applications Sent",
-    value: 24,
-    delta: "+6 this week",
-    positive: true,
-    icon: FileText,
-    color: "from-violet-500 to-indigo-500",
-    bg: "bg-violet-50",
-    text: "text-violet-600",
-  },
-  {
-    id: "stat-avg-ats",
-    label: "Average ATS Score",
-    value: "78%",
-    delta: "+12% from start",
-    positive: true,
-    icon: Target,
-    color: "from-emerald-500 to-teal-500",
-    bg: "bg-emerald-50",
-    text: "text-emerald-600",
-  },
-  {
-    id: "stat-interviews",
-    label: "Interviews Scheduled",
-    value: 5,
-    delta: "2 this week",
-    positive: true,
-    icon: Users,
-    color: "from-sky-500 to-cyan-500",
-    bg: "bg-sky-50",
-    text: "text-sky-600",
-  },
-  {
-    id: "stat-response-rate",
-    label: "Response Rate",
-    value: "21%",
-    delta: "+4% from avg",
-    positive: true,
-    icon: Zap,
-    color: "from-amber-500 to-orange-500",
-    bg: "bg-amber-50",
-    text: "text-amber-600",
-  },
-];
+const STAT_CONFIG: Record<string, { icon: any; color: string; bg: string; text: string }> = {
+  "stat-applications":  { icon: FileText,   color: "from-violet-500 to-indigo-500", bg: "bg-violet-50",   text: "text-violet-600" },
+  "stat-avg-ats":       { icon: Target,     color: "from-emerald-500 to-teal-500", bg: "bg-emerald-50",  text: "text-emerald-600" },
+  "stat-interviews":    { icon: Users,      color: "from-sky-500 to-cyan-500",    bg: "bg-sky-50",      text: "text-sky-600" },
+  "stat-response-rate": { icon: Zap,        color: "from-amber-500 to-orange-500", bg: "bg-amber-50",    text: "text-amber-600" },
+};
 
-const ATS_HISTORY = [
-  { week: "W1", score: 52 },
-  { week: "W2", score: 61 },
-  { week: "W3", score: 65 },
-  { week: "W4", score: 71 },
-  { week: "W5", score: 75 },
-  { week: "W6", score: 78 },
-  { week: "W7", score: 84 },
-  { week: "W8", score: 82 },
-];
+const STATUS_CONFIG: Record<string, { color: string; light: string; text: string; icon: any }> = {
+  Offer:          { color: "bg-emerald-500", light: "bg-emerald-50", text: "text-emerald-700", icon: Award },
+  Interviewing:   { color: "bg-sky-500",     light: "bg-sky-50",     text: "text-sky-700",     icon: Users },
+  Applied:        { color: "bg-violet-500",  light: "bg-violet-50",  text: "text-violet-700",  icon: CheckCircle2 },
+  Saved:          { color: "bg-slate-400",   light: "bg-slate-50",   text: "text-slate-600",   icon: Briefcase },
+  Rejected:       { color: "bg-red-400",     light: "bg-red-50",     text: "text-red-600",     icon: XCircle },
+};
 
-const STATUS_BREAKDOWN = [
-  { status: "Offer",       count: 1,  color: "bg-emerald-500", light: "bg-emerald-50", text: "text-emerald-700", icon: Award },
-  { status: "Interviewing", count: 5,  color: "bg-sky-500",     light: "bg-sky-50",     text: "text-sky-700",     icon: Users },
-  { status: "Applied",     count: 11, color: "bg-violet-500",  light: "bg-violet-50",  text: "text-violet-700",  icon: CheckCircle2 },
-  { status: "Saved",       count: 5,  color: "bg-slate-400",   light: "bg-slate-50",   text: "text-slate-600",   icon: Briefcase },
-  { status: "Rejected",    count: 2,  color: "bg-red-400",     light: "bg-red-50",     text: "text-red-600",     icon: XCircle },
-];
-
-const RECENT_APPLICATIONS = [
-  { company: "Anthropic",      role: "GenAI Platform Engineer", ats: 91, status: "Interviewing", daysAgo: 2 },
-  { company: "OpenAI",         role: "Senior AI Engineer",      ats: 86, status: "Applied",      daysAgo: 4 },
-  { company: "Google DeepMind", role: "ML Engineer",            ats: 82, status: "Interviewing", daysAgo: 5 },
-  { company: "Cohere",         role: "NLP Engineer",            ats: 78, status: "Applied",      daysAgo: 7 },
-  { company: "Spotify",        role: "Data Scientist",          ats: 74, status: "Applied",      daysAgo: 9 },
-  { company: "Meta",           role: "Applied AI Scientist",    ats: 70, status: "Rejected",     daysAgo: 12 },
-];
-
-const SKILL_GAPS = [
+const DEFAULT_SKILL_GAPS = [
   { skill: "Kubernetes",      coverage: 40 },
   { skill: "Rust",            coverage: 15 },
   { skill: "MLOps (Kubeflow)", coverage: 55 },
@@ -96,14 +38,15 @@ const SKILL_GAPS = [
 // ---------------------------------------------------------------------------
 // Inline bar chart for ATS history
 // ---------------------------------------------------------------------------
-function ATSChart() {
-  const maxScore = Math.max(...ATS_HISTORY.map((d) => d.score));
+function ATSChart({ history }: { history: any[] }) {
+  if (!history || history.length === 0) return null;
+  const maxScore = Math.max(...history.map((d) => d.score), 1);
 
   return (
     <div className="flex items-end gap-2 h-24 mt-4">
-      {ATS_HISTORY.map((d, i) => {
+      {history.map((d, i) => {
         const height = (d.score / maxScore) * 100;
-        const isLast = i === ATS_HISTORY.length - 1;
+        const isLast = i === history.length - 1;
         return (
           <div key={d.week} className="flex-1 flex flex-col items-center gap-1.5">
             <motion.div
@@ -129,7 +72,7 @@ function ATSChart() {
 // Status badge helper
 // ---------------------------------------------------------------------------
 function StatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_BREAKDOWN.find((s) => s.status === status);
+  const cfg = STATUS_CONFIG[status];
   if (!cfg) return <span className="text-xs text-slate-400">{status}</span>;
   return (
     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${cfg.light} ${cfg.text}`}>
@@ -139,7 +82,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// ATS score color
+// ATS score color helper
 // ---------------------------------------------------------------------------
 function atsColor(score: number) {
   if (score >= 80) return "text-emerald-600";
@@ -149,17 +92,70 @@ function atsColor(score: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Main component
+// Main Component
 // ---------------------------------------------------------------------------
 export function AnalyticsDashboard() {
-  const total = STATUS_BREAKDOWN.reduce((a, s) => a + s.count, 0);
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchDashboard = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/v1/analytics/dashboard`);
+        const json = await res.json();
+        setData(json);
+      } catch (err) {
+        console.error("Failed to load analytics", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchDashboard();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-3">
+        <Loader2 className="w-8 h-8 text-violet-600 animate-spin" />
+        <p className="text-sm font-medium text-slate-500">Loading analytics dashboard...</p>
+      </div>
+    );
+  }
+
+  const pipelineBreakdown = data?.pipeline_breakdown || [];
+  const total = pipelineBreakdown.reduce((a: number, s: any) => a + s.count, 0);
+
+  if (total === 0) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-md mx-auto text-center py-20 px-6 bg-white border border-slate-200 rounded-3xl shadow-sm space-y-6"
+      >
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-violet-50 text-violet-600">
+          <BarChart3 className="w-8 h-8" />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xl font-bold text-slate-900">Your Dashboard is Empty</h3>
+          <p className="text-slate-500 text-sm max-w-xs mx-auto">
+            You haven't tracked any applications yet. Go to the Jobs tab, select a position, and click "Tailor Now" to save or mark it as applied!
+          </p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  const summaryStats = data?.summary_stats || [];
+  const recentApplications = data?.recent_applications || [];
+  const atsHistory = data?.ats_history || [];
 
   return (
     <div className="space-y-6 pb-6">
       {/* ── Summary stats ────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {SUMMARY_STATS.map((stat, i) => {
-          const Icon = stat.icon;
+        {summaryStats.map((stat: any, i: number) => {
+          const config = STAT_CONFIG[stat.id] || { icon: FileText, color: "from-slate-500 to-slate-600", bg: "bg-slate-50", text: "text-slate-600" };
+          const Icon = config.icon;
           return (
             <motion.div
               key={stat.id}
@@ -169,7 +165,7 @@ export function AnalyticsDashboard() {
               transition={{ delay: i * 0.07 }}
               className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm"
             >
-              <div className={`inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br ${stat.color} mb-3`}>
+              <div className={`inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br ${config.color} mb-3`}>
                 <Icon className="w-4 h-4 text-white" />
               </div>
               <p className="text-2xl font-black text-slate-900">{stat.value}</p>
@@ -199,10 +195,10 @@ export function AnalyticsDashboard() {
             </div>
             <div className="flex items-center gap-1 text-emerald-600 text-xs font-semibold bg-emerald-50 px-2 py-1 rounded-full">
               <TrendingUp className="w-3 h-3" />
-              +30pts
+              Progressive matches
             </div>
           </div>
-          <ATSChart />
+          <ATSChart history={atsHistory} />
         </motion.div>
 
         {/* Status breakdown */}
@@ -221,14 +217,15 @@ export function AnalyticsDashboard() {
           </div>
 
           <div className="space-y-3">
-            {STATUS_BREAKDOWN.map((s) => {
-              const Icon = s.icon;
+            {pipelineBreakdown.map((s: any) => {
+              const config = STATUS_CONFIG[s.status] || STATUS_CONFIG.Saved;
+              const Icon = config.icon;
               const pct = Math.round((s.count / total) * 100);
               return (
                 <div key={s.status} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-1.5">
-                      <Icon className={`w-3.5 h-3.5 ${s.text}`} />
+                      <Icon className={`w-3.5 h-3.5 ${config.text}`} />
                       <span className="font-medium text-slate-600">{s.status}</span>
                     </div>
                     <span className="font-bold text-slate-700">{s.count}</span>
@@ -238,7 +235,7 @@ export function AnalyticsDashboard() {
                       initial={{ width: 0 }}
                       animate={{ width: `${pct}%` }}
                       transition={{ duration: 0.7, ease: "easeOut", delay: 0.4 }}
-                      className={`h-full rounded-full ${s.color}`}
+                      className={`h-full rounded-full ${config.color}`}
                     />
                   </div>
                 </div>
@@ -265,7 +262,7 @@ export function AnalyticsDashboard() {
             <Briefcase className="w-4 h-4 text-slate-400" />
           </div>
           <div className="divide-y divide-slate-50">
-            {RECENT_APPLICATIONS.map((app, i) => (
+            {recentApplications.map((app: any, i: number) => (
               <motion.div
                 key={i}
                 id={`app-row-${i}`}
@@ -280,7 +277,7 @@ export function AnalyticsDashboard() {
                     <span>{app.company}</span>
                     <span className="text-slate-300">·</span>
                     <Clock className="w-3 h-3" />
-                    <span>{app.daysAgo}d ago</span>
+                    <span>{app.daysAgo === 0 ? "Today" : `${app.daysAgo}d ago`}</span>
                   </p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0 ml-3">
@@ -291,10 +288,14 @@ export function AnalyticsDashboard() {
                 </div>
               </motion.div>
             ))}
+
+            {recentApplications.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-8">No recent applications.</p>
+            )}
           </div>
         </motion.div>
 
-        {/* Skill gap radar */}
+        {/* Skill gaps */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -310,7 +311,7 @@ export function AnalyticsDashboard() {
           </div>
 
           <div className="space-y-3.5">
-            {SKILL_GAPS.map((s, i) => (
+            {DEFAULT_SKILL_GAPS.map((s, i) => (
               <div key={i} className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium text-slate-600 truncate">{s.skill}</span>

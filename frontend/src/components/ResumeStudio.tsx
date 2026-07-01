@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   Sparkles, AlertCircle, Download, Loader2,
   RotateCcw, Pencil, Check, X, TrendingUp, TrendingDown, Minus,
-  RefreshCw, ChevronDown, ChevronRight,
+  RefreshCw, ChevronDown, ChevronRight, Copy, FileText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { API_BASE_URL } from "@/lib/config";
@@ -554,6 +554,14 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   const [refineError, setRefineError] = useState<string | null>(null);
   const [activeKeyword, setActiveKeyword] = useState<string | null>(null);
 
+  const [activeTab, setActiveTab] = useState<"resume" | "cover-letter">("resume");
+  const [coverLetterText, setCoverLetterText] = useState("");
+  const [isCoverLetterLoading, setIsCoverLetterLoading] = useState(false);
+  const [isEditingCoverLetter, setIsEditingCoverLetter] = useState(false);
+  const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [appStatus, setAppStatus] = useState<string>("SAVED");
+
   // Fetch ATS score against JD
   const fetchScore = useCallback(async (text: string) => {
     setIsScoringLoading(true);
@@ -568,11 +576,109 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
         const s: ScoreState = { score: data.score, matched: data.matched, missing: data.missing };
         setAtsScore(s);
         setScoreHistory((prev) => [...prev, s]);
+
+        // Auto-save the score to the application tracking
+        try {
+          await fetch(`${API_BASE_URL}/api/v1/applications`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              job_id: job.id,
+              status: appStatus,
+              ats_score: data.score
+            })
+          });
+        } catch (err) {
+          console.error("Failed to auto-save ATS score", err);
+        }
       }
     } catch { /* silent */ } finally {
       setIsScoringLoading(false);
     }
-  }, [job.description_text]);
+  }, [job.description_text, job.id, appStatus]);
+
+  // Fetch Cover Letter
+  const fetchCoverLetter = useCallback(async (force = false) => {
+    if (coverLetterText && !force) return;
+    setIsCoverLetterLoading(true);
+    setCoverLetterError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/generate/cover-letter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_text: resumeText || localStorage.getItem("resume_text") || "",
+          job_description: job.description_text,
+          company: job.company,
+          role: job.title,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to generate cover letter");
+      setCoverLetterText(data.cover_letter);
+    } catch (err: any) {
+      console.error(err);
+      setCoverLetterError(err.message || "Failed to generate cover letter. Please try again.");
+    } finally {
+      setIsCoverLetterLoading(false);
+    }
+  }, [resumeText, job.description_text, job.company, job.title, coverLetterText]);
+
+  const handleCopyCoverLetter = () => {
+    if (!coverLetterText) return;
+    navigator.clipboard.writeText(coverLetterText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadCoverLetter = () => {
+    if (!coverLetterText) return;
+    const blob = new Blob([coverLetterText], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `CoverLetter_${job.company.replace(/\s+/g, "_")}_${job.title.replace(/\s+/g, "_")}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Fetch current status on mount or when phase becomes editor
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/v1/applications`);
+        const data = await res.json();
+        const existing = data.results.find((app: any) => app.job_id === job.id);
+        if (existing) {
+          setAppStatus(existing.status);
+        }
+      } catch (err) {
+        console.error("Failed to load application status", err);
+      }
+    };
+    if (phase === "editor") {
+      fetchStatus();
+    }
+  }, [phase, job.id]);
+
+  const handleStatusChange = async (newStatus: string) => {
+    setAppStatus(newStatus);
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/applications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id: job.id,
+          status: newStatus,
+          ats_score: atsScore?.score ?? null
+        })
+      });
+    } catch (err) {
+      console.error("Failed to update application status", err);
+    }
+  };
 
   const previousScore = scoreHistory.length >= 2
     ? scoreHistory[scoreHistory.length - 2].score
@@ -752,41 +858,93 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
             <span className="text-xs font-black text-slate-800">{job.title}</span>
             <span className="text-[10px] text-slate-400">{job.company}</span>
           </div>
+          <div className="h-4 w-px bg-slate-200" />
+          <select
+            value={appStatus}
+            onChange={(e) => handleStatusChange(e.target.value)}
+            className="text-xs bg-slate-50 border border-slate-200 text-slate-700 rounded-full px-3 py-1 font-bold outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+          >
+            <option value="SAVED">💼 Saved</option>
+            <option value="APPLIED">📝 Applied</option>
+            <option value="INTERVIEWING">🤝 Interviewing</option>
+            <option value="REJECTED">❌ Rejected</option>
+            <option value="OFFER">🎉 Offer</option>
+          </select>
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Regenerate */}
-          <Button
-            id="regenerate-btn"
-            variant="ghost" size="sm"
-            onClick={handleGenerate}
-            disabled={isRefining || phase === "exporting"}
-            className="text-slate-400 hover:text-indigo-600 rounded-full text-xs gap-1.5"
-          >
-            <RefreshCw className="w-3 h-3" /> Regenerate
-          </Button>
+          {activeTab === "resume" ? (
+            <>
+              {/* Regenerate Resume */}
+              <Button
+                id="regenerate-btn"
+                variant="ghost" size="sm"
+                onClick={handleGenerate}
+                disabled={isRefining || phase === "exporting"}
+                className="text-slate-400 hover:text-indigo-600 rounded-full text-xs gap-1.5"
+              >
+                <RefreshCw className="w-3 h-3" /> Regenerate
+              </Button>
 
-          {history.length > 1 && (
-            <Button variant="ghost" size="sm" onClick={handleUndo} disabled={isRefining}
-              className="text-slate-400 hover:text-slate-700 rounded-full text-xs gap-1">
-              <RotateCcw className="w-3 h-3" /> Undo
-            </Button>
+              {history.length > 1 && (
+                <Button variant="ghost" size="sm" onClick={handleUndo} disabled={isRefining}
+                  className="text-slate-400 hover:text-slate-700 rounded-full text-xs gap-1">
+                  <RotateCcw className="w-3 h-3" /> Undo
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              {/* Regenerate Cover Letter */}
+              <Button
+                id="regenerate-cl-btn"
+                variant="ghost" size="sm"
+                onClick={() => fetchCoverLetter(true)}
+                disabled={isCoverLetterLoading}
+                className="text-slate-400 hover:text-indigo-600 rounded-full text-xs gap-1.5"
+              >
+                <RefreshCw className="w-3 h-3" /> Regenerate
+              </Button>
+              <Button
+                variant="ghost" size="sm"
+                onClick={handleCopyCoverLetter}
+                disabled={!coverLetterText || isCoverLetterLoading}
+                className="text-slate-400 hover:text-slate-700 rounded-full text-xs gap-1"
+              >
+                {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                {copied ? "Copied" : "Copy"}
+              </Button>
+            </>
           )}
+
           <Button variant="ghost" size="sm" onClick={onClose}
             className="text-slate-400 hover:text-slate-700 rounded-full text-xs">
             Close
           </Button>
-          <Button
-            id="download-docx-btn"
-            onClick={handleDownload}
-            disabled={phase === "exporting" || isRefining}
-            size="sm"
-            className="bg-slate-900 hover:bg-slate-700 text-white rounded-full px-4 text-xs font-bold gap-1.5 shadow-sm"
-          >
-            {phase === "exporting"
-              ? <><Loader2 className="w-3 h-3 animate-spin" /> Generating…</>
-              : <><Download className="w-3 h-3" /> Download DOCX</>}
-          </Button>
+
+          {activeTab === "resume" ? (
+            <Button
+              id="download-docx-btn"
+              onClick={handleDownload}
+              disabled={phase === "exporting" || isRefining}
+              size="sm"
+              className="bg-slate-900 hover:bg-slate-700 text-white rounded-full px-4 text-xs font-bold gap-1.5 shadow-sm"
+            >
+              {phase === "exporting"
+                ? <><Loader2 className="w-3 h-3 animate-spin" /> Generating…</>
+                : <><Download className="w-3 h-3" /> Download DOCX</>}
+            </Button>
+          ) : (
+            <Button
+              id="download-txt-btn"
+              onClick={handleDownloadCoverLetter}
+              disabled={!coverLetterText || isCoverLetterLoading}
+              size="sm"
+              className="bg-slate-900 hover:bg-slate-700 text-white rounded-full px-4 text-xs font-bold gap-1.5 shadow-sm"
+            >
+              <Download className="w-3 h-3" /> Download TXT
+            </Button>
+          )}
         </div>
       </div>
 
@@ -828,13 +986,36 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
           />
         </div>
 
-        {/* CENTRE — Tailored Resume */}
+        {/* CENTRE — Tailored Resume / Cover Letter */}
         <div className="flex-1 flex flex-col overflow-hidden bg-white">
-          <div className="px-6 py-2.5 border-b border-slate-100 bg-white shrink-0 flex items-center justify-between">
-            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-              <Pencil className="w-3 h-3" /> Tailored Resume — hover any line to refine
-            </p>
-            {history.length > 1 && (
+          {/* Custom Navigation Tabs */}
+          <div className="px-6 py-2 border-b border-slate-100 bg-white shrink-0 flex items-center justify-between">
+            <div className="flex gap-4">
+              <button
+                onClick={() => setActiveTab("resume")}
+                className={`text-xs font-bold uppercase tracking-widest pb-1 border-b-2 transition-all ${
+                  activeTab === "resume"
+                    ? "text-indigo-600 border-indigo-600"
+                    : "text-slate-400 border-transparent hover:text-slate-600"
+                }`}
+              >
+                📝 Tailored Resume
+              </button>
+              <button
+                onClick={() => {
+                  setActiveTab("cover-letter");
+                  fetchCoverLetter();
+                }}
+                className={`text-xs font-bold uppercase tracking-widest pb-1 border-b-2 transition-all ${
+                  activeTab === "cover-letter"
+                    ? "text-indigo-600 border-indigo-600"
+                    : "text-slate-400 border-transparent hover:text-slate-600"
+                }`}
+              >
+                ✉️ Cover Letter
+              </button>
+            </div>
+            {activeTab === "resume" && history.length > 1 && (
               <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full font-semibold">
                 {history.length - 1} edit{history.length !== 2 ? "s" : ""}
               </span>
@@ -842,35 +1023,101 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
           </div>
 
           <div className="flex-1 overflow-y-auto px-8 py-7 relative">
-            {/* Refining overlay */}
-            {isRefining && (
-              <div className="absolute inset-0 bg-white/70 z-10 flex items-center justify-center pointer-events-none">
-                <div className="bg-white border border-slate-200 rounded-2xl shadow-xl px-5 py-3 flex items-center gap-3">
-                  <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
-                  <span className="text-sm font-semibold text-slate-700">Applying refinement…</span>
-                </div>
+            {activeTab === "resume" ? (
+              <>
+                {/* Refining overlay */}
+                {isRefining && (
+                  <div className="absolute inset-0 bg-white/70 z-10 flex items-center justify-center pointer-events-none">
+                    <div className="bg-white border border-slate-200 rounded-2xl shadow-xl px-5 py-3 flex items-center gap-3">
+                      <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                      <span className="text-sm font-semibold text-slate-700">Applying refinement…</span>
+                    </div>
+                  </div>
+                )}
+
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={resumeText.slice(0, 80)}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ResumeRenderer
+                      text={resumeText}
+                      onRefine={handleInlineRefine}
+                      isRefining={isRefining}
+                      activeKey={activeKey}
+                      matchedKeywords={atsScore?.matched ?? []}
+                      missingKeywords={atsScore?.missing ?? []}
+                      activeKeyword={activeKeyword}
+                    />
+                  </motion.div>
+                </AnimatePresence>
+              </>
+            ) : (
+              <div className="h-full flex flex-col">
+                {isCoverLetterLoading ? (
+                  <div className="flex-1 flex flex-col items-center justify-center space-y-3">
+                    <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                    <p className="text-sm font-medium text-slate-600">Drafting your cover letter with AI...</p>
+                  </div>
+                ) : coverLetterError ? (
+                  <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+                    <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      {coverLetterError}
+                    </div>
+                    <Button onClick={() => fetchCoverLetter(true)} className="bg-indigo-600 text-white rounded-full">
+                      Try Again
+                    </Button>
+                  </div>
+                ) : (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex-1 flex flex-col space-y-4 animate-in fade-in"
+                  >
+                    {/* Cover Letter Controls */}
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        Tailored Cover Letter
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setIsEditingCoverLetter(!isEditingCoverLetter)}
+                          className="h-8 rounded-full text-xs border-slate-200 text-slate-600 hover:bg-slate-50 font-bold"
+                        >
+                          {isEditingCoverLetter ? (
+                            <><Check className="w-3.5 h-3.5 mr-1 text-emerald-600 font-bold" /> Finish Editing</>
+                          ) : (
+                            <><Pencil className="w-3.5 h-3.5 mr-1" /> Edit Letter</>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Content Area */}
+                    <div className="flex-1 flex flex-col">
+                      {isEditingCoverLetter ? (
+                        <textarea
+                          value={coverLetterText}
+                          onChange={(e) => setCoverLetterText(e.target.value)}
+                          className="flex-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-750 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-sans resize-none leading-relaxed"
+                          style={{ minHeight: "350px" }}
+                        />
+                      ) : (
+                        <div className="bg-slate-50/50 rounded-2xl border border-slate-150 p-8 font-serif text-sm text-slate-800 leading-relaxed whitespace-pre-wrap shadow-sm">
+                          {coverLetterText}
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
               </div>
             )}
-
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={resumeText.slice(0, 80)}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-              >
-                <ResumeRenderer
-                  text={resumeText}
-                  onRefine={handleInlineRefine}
-                  isRefining={isRefining}
-                  activeKey={activeKey}
-                  matchedKeywords={atsScore?.matched ?? []}
-                  missingKeywords={atsScore?.missing ?? []}
-                  activeKeyword={activeKeyword}
-                />
-              </motion.div>
-            </AnimatePresence>
           </div>
         </div>
 
