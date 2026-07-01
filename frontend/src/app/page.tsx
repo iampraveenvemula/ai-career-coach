@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 export default function Home() {
   return (
     <main className="min-h-screen bg-[#FAFAFA] text-slate-800 flex flex-col items-center py-10 font-sans px-4">
-      <div className="w-full max-w-5xl">
+      <div className="w-full max-w-7xl">
         <Tabs defaultValue="resume" className="w-full">
           {/* Tab bar */}
           <TabsList className="flex w-full bg-transparent border-b-2 border-slate-200 rounded-none mb-8 max-w-lg mx-auto h-auto p-0 gap-0">

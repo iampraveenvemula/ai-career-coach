@@ -555,6 +555,7 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   const [activeKeyword, setActiveKeyword] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"resume" | "cover-letter">("resume");
+  const [rightTab, setRightTab] = useState<"keywords" | "details">("keywords");
   const [coverLetterText, setCoverLetterText] = useState("");
   const [isCoverLetterLoading, setIsCoverLetterLoading] = useState(false);
   const [isEditingCoverLetter, setIsEditingCoverLetter] = useState(false);
@@ -969,24 +970,10 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
         </div>
       )}
 
-      {/* ── 3-column layout ── */}
+      {/* ── 2-column layout (spacious center workspace + unified right sidebar) ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* LEFT — Keyword Gap Panel */}
-        <div className="w-[200px] shrink-0 border-r border-slate-200 bg-slate-50/50 overflow-hidden flex flex-col px-3 py-4">
-          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-3">
-            ATS Analysis
-          </p>
-          <KeywordPanel
-            score={atsScore}
-            isLoading={isScoringLoading}
-            activeKeyword={activeKeyword}
-            onKeywordClick={handleKeywordClick}
-            previousScore={previousScore}
-          />
-        </div>
-
-        {/* CENTRE — Tailored Resume / Cover Letter */}
+        {/* LEFT — Tailored Resume / Cover Letter (Wide Workspace) */}
         <div className="flex-1 flex flex-col overflow-hidden bg-white">
           {/* Custom Navigation Tabs */}
           <div className="px-6 py-2 border-b border-slate-100 bg-white shrink-0 flex items-center justify-between">
@@ -1121,41 +1108,66 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
           </div>
         </div>
 
-        {/* RIGHT — Job Description */}
-        <div className="w-[260px] shrink-0 border-l border-slate-200 flex flex-col overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50 shrink-0">
-            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">
-              Job Description
-            </p>
+        {/* RIGHT — ATS score, keywords, and job description details (Unified Sidebar) */}
+        <div className="w-[300px] shrink-0 border-l border-slate-200 bg-slate-50/20 overflow-hidden flex flex-col">
+          {/* Header tabs */}
+          <div className="px-4 py-2.5 border-b border-slate-100 bg-white shrink-0 flex items-center justify-between">
+            <div className="flex gap-4">
+              <button
+                onClick={() => setRightTab("keywords")}
+                className={`text-[10px] font-black uppercase tracking-widest pb-0.5 border-b-2 transition-all ${
+                  rightTab === "keywords"
+                    ? "text-indigo-650 border-indigo-650"
+                    : "text-slate-400 border-transparent hover:text-slate-650"
+                }`}
+              >
+                📊 ATS Analysis
+              </button>
+              <button
+                onClick={() => setRightTab("details")}
+                className={`text-[10px] font-black uppercase tracking-widest pb-0.5 border-b-2 transition-all ${
+                  rightTab === "details"
+                    ? "text-indigo-650 border-indigo-650"
+                    : "text-slate-400 border-transparent hover:text-slate-650"
+                }`}
+              >
+                📝 Job Details
+              </button>
+            </div>
           </div>
 
-          {atsScore && (atsScore.missing.length > 0 || atsScore.matched.length > 0) && (
-            <div className="px-4 py-2 border-b border-slate-100 bg-white shrink-0">
-              <div className="flex gap-3 text-[10px] text-slate-500">
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-2 h-2 rounded-sm bg-red-200" /> Missing
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-2 h-2 rounded-sm bg-emerald-200" /> Matched
-                </span>
-                {activeKeyword && (
-                  <span className="flex items-center gap-1">
-                    <span className="inline-block w-2 h-2 rounded-sm bg-yellow-300" /> Active
-                  </span>
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+            {rightTab === "keywords" ? (
+              <KeywordPanel
+                score={atsScore}
+                isLoading={isScoringLoading}
+                activeKeyword={activeKeyword}
+                onKeywordClick={handleKeywordClick}
+                previousScore={previousScore}
+              />
+            ) : (
+              <div className="flex flex-col gap-3">
+                {atsScore && (atsScore.missing.length > 0 || atsScore.matched.length > 0) && (
+                  <div className="flex gap-2.5 text-[9px] text-slate-500 font-bold border-b border-slate-100 pb-2 mb-1.5">
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-2 h-2 rounded-sm bg-red-200" /> Missing
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-2 h-2 rounded-sm bg-emerald-200" /> Matched
+                    </span>
+                  </div>
                 )}
+                <JDPanel
+                  text={job.description_text}
+                  missing={atsScore?.missing ?? []}
+                  matched={atsScore?.matched ?? []}
+                  activeKeyword={activeKeyword}
+                />
               </div>
-            </div>
-          )}
-
-          <div className="flex-1 overflow-y-auto px-4 py-4">
-            <JDPanel
-              text={job.description_text}
-              missing={atsScore?.missing ?? []}
-              matched={atsScore?.matched ?? []}
-              activeKeyword={activeKeyword}
-            />
+            )}
           </div>
         </div>
+
       </div>
     </motion.div>
   );
