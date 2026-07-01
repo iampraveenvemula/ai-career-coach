@@ -7,16 +7,20 @@ import httpx
 import uuid
 import re
 from bs4 import BeautifulSoup
-from typing import Optional
+from typing import Optional  # noqa: F401
 
 
-async def scrape_remotive(query: str, limit: int = 10) -> list[dict]:
+async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> list[dict]:
     """
     Fetches jobs from the Remotive API (free, no auth required).
     Great for remote AI/ML/engineering roles.
     """
+    search_term = query
+    if location:
+        search_term = f"{query} {location}".strip()
+        
     url = "https://remotive.com/api/remote-jobs"
-    params = {"search": query, "limit": limit}
+    params = {"search": search_term, "limit": limit}
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -36,11 +40,17 @@ async def scrape_remotive(query: str, limit: int = 10) -> list[dict]:
             if not salary:
                 salary = "Not disclosed"
 
+            loc = item.get("candidate_required_location", "Remote")
+            # If the user searched for a specific location, filter or label accordingly
+            if location and location.lower() not in loc.lower() and loc.lower() != "worldwide":
+                # Skip if it doesn't match location criteria
+                continue
+
             jobs.append({
                 "id": str(uuid.uuid4()),
                 "title": item.get("title", "Unknown"),
                 "company": item.get("company_name", "Unknown"),
-                "location": item.get("candidate_required_location", "Remote"),
+                "location": loc,
                 "description_text": desc_text,
                 "url": item.get("url", ""),
                 "salary_range": salary,
@@ -52,13 +62,13 @@ async def scrape_remotive(query: str, limit: int = 10) -> list[dict]:
         return []
 
 
-async def scrape_linkedin_guest(query: str, limit: int = 10) -> list[dict]:
+async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 10) -> list[dict]:
     """
     Fetches jobs from LinkedIn's public guest job search page.
     No authentication required — uses the public guest API.
     """
     url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    params = {"keywords": query, "location": "", "start": 0}
+    params = {"keywords": query, "location": location or "", "start": 0}
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
@@ -80,17 +90,17 @@ async def scrape_linkedin_guest(query: str, limit: int = 10) -> list[dict]:
 
             title = title_el.get_text(strip=True) if title_el else "Unknown"
             company = company_el.get_text(strip=True) if company_el else "Unknown"
-            location = location_el.get_text(strip=True) if location_el else "Unknown"
+            loc = location_el.get_text(strip=True) if location_el else (location or "Unknown")
             job_url = link_el["href"] if link_el and link_el.get("href") else ""
 
             # LinkedIn guest page doesn't provide full descriptions
-            desc = f"{title} at {company}. Location: {location}."
+            desc = f"{title} at {company}. Location: {loc}."
 
             jobs.append({
                 "id": str(uuid.uuid4()),
                 "title": title,
                 "company": company,
-                "location": location,
+                "location": loc,
                 "description_text": desc,
                 "url": job_url.split("?")[0] if job_url else "",
                 "salary_range": "Not disclosed",
@@ -102,12 +112,15 @@ async def scrape_linkedin_guest(query: str, limit: int = 10) -> list[dict]:
         return []
 
 
-async def scrape_google_jobs(query: str, limit: int = 10) -> list[dict]:
+async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) -> list[dict]:
     """
     Scrapes job listings from Google search results.
     Uses standard web search with job-related queries.
     """
     search_query = f"{query} jobs hiring"
+    if location:
+        search_query = f"{query} jobs hiring in {location}"
+
     url = "https://www.google.com/search"
     params = {"q": search_query, "num": 20}
     headers = {
@@ -132,9 +145,9 @@ async def scrape_google_jobs(query: str, limit: int = 10) -> list[dict]:
                     "id": str(uuid.uuid4()),
                     "title": title_el.get_text(strip=True),
                     "company": "Via Google",
-                    "location": "See listing",
+                    "location": location or "See listing",
                     "description_text": title_el.get_text(strip=True),
-                    "url": f"https://www.google.com/search?q={query}+jobs&ibp=htl;jobs",
+                    "url": f"https://www.google.com/search?q={query}+{location}+jobs&ibp=htl;jobs",
                     "salary_range": "Not disclosed",
                     "source": "Google",
                 })
@@ -157,7 +170,7 @@ async def scrape_google_jobs(query: str, limit: int = 10) -> list[dict]:
                             "id": str(uuid.uuid4()),
                             "title": title_text,
                             "company": "Via Google Search",
-                            "location": "See listing",
+                            "location": location or "See listing",
                             "description_text": snippet[:500],
                             "url": href,
                             "salary_range": "Not disclosed",
@@ -173,12 +186,23 @@ async def scrape_google_jobs(query: str, limit: int = 10) -> list[dict]:
 async def scrape_all(query: str, limit_per_source: int = 5) -> list[dict]:
     """
     Runs all scrapers in parallel and returns combined results.
+    Intelligently extracts location from the search query (e.g. "in uae")
+    to pass as a location filter to external APIs.
     """
+    location = ""
+    keywords = query
+
+    # Parse location from queries like "ai engineer in uae" or "software engineer at dubai"
+    match = re.search(r"\s+(?:in|at|near)\s+([a-zA-Z\s,]+)$", query, re.IGNORECASE)
+    if match:
+        location = match.group(1).strip()
+        keywords = query[:match.start()].strip()
+
     import asyncio
     results = await asyncio.gather(
-        scrape_remotive(query, limit_per_source),
-        scrape_linkedin_guest(query, limit_per_source),
-        scrape_google_jobs(query, limit_per_source),
+        scrape_remotive(keywords, location, limit_per_source),
+        scrape_linkedin_guest(keywords, location, limit_per_source),
+        scrape_google_jobs(keywords, location, limit_per_source),
         return_exceptions=True,
     )
 
