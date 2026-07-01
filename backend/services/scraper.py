@@ -13,6 +13,7 @@ import os
 import json
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, parse_qs
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
@@ -289,15 +290,27 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                 
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
-                results = soup.find_all("div", class_="web-result")
+                results = soup.find_all("div", class_="result")
                 for res in results[:limit]:
                     a_el = res.find("a", class_="result__a")
                     snippet_el = res.find("a", class_="result__snippet")
                     
                     if a_el:
                         title_text = a_el.get_text(strip=True)
-                        href = a_el.get("href") or ""
-                        if not href or not href.startswith("http") or "duckduckgo.com" in href:
+                        raw_href = a_el.get("href") or ""
+                        
+                        # Extract the actual job link out of DuckDuckGo redirect
+                        actual_url = raw_href
+                        if raw_href.startswith("//"):
+                            raw_href = "https:" + raw_href
+                        
+                        if "duckduckgo.com/l/" in raw_href:
+                            parsed_url = urlparse(raw_href)
+                            qs = parse_qs(parsed_url.query)
+                            if "uddg" in qs:
+                                actual_url = qs["uddg"][0]
+                                
+                        if not actual_url.startswith("http") or "duckduckgo.com" in actual_url:
                             continue
                             
                         snippet = snippet_el.get_text(strip=True) if snippet_el else ""
@@ -308,7 +321,7 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                             "company": "Via Google Search (DDG Failover)",
                             "location": location or "See listing",
                             "description_text": snippet[:500] if snippet else title_text,
-                            "url": href,
+                            "url": actual_url,
                             "salary_range": "Not disclosed",
                             "source": "Google",
                             "posted_at": datetime.utcnow()
