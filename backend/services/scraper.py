@@ -1,13 +1,34 @@
 """
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
+Uses LLM to intelligently parse search queries into core keywords and location.
 """
 
 import httpx
 import uuid
 import re
+import os
+import json
 from bs4 import BeautifulSoup
-from typing import Optional  # noqa: F401
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+
+QUERY_PARSE_PROMPT = """You are a search query parsing agent. Given a user's job search query, extract the target job title/keywords and the target geographic location (city, country, region, or 'remote').
+Return ONLY a valid JSON object. Do not include markdown fences (```), commentary, or extra text.
+
+Return exactly this JSON schema:
+{
+  "keywords": "<core job role, title, or skills, e.g. 'AI Engineer'>",
+  "location": "<target location, e.g. 'United Arab Emirates' or 'Dubai' or 'Remote'. If none specified, return ''>"
+}
+
+Examples:
+Query: "ai engineer in uae" -> {"keywords": "ai engineer", "location": "uae"}
+Query: "senior python developer looking for dubai work" -> {"keywords": "senior python developer", "location": "dubai"}
+Query: "data science positions near london" -> {"keywords": "data science", "location": "london"}
+Query: "ml engineering remote" -> {"keywords": "ml engineering", "location": "remote"}
+"""
 
 
 async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> list[dict]:
@@ -183,20 +204,54 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
         return []
 
 
+async def _llm_parse_query(query: str) -> dict:
+    """
+    Uses the Ollama LLM to parse the user's search query into keywords and location.
+    Falls back to a basic regex parser if Ollama fails.
+    """
+    try:
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": QUERY_PARSE_PROMPT},
+                {"role": "user", "content": f"Query: \"{query}\""}
+            ],
+            "stream": False,
+            "format": "json"
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            resp.raise_for_status()
+            content = resp.json().get("message", {}).get("content", "").strip()
+            # Clean markdown code block wraps
+            content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+            parsed = json.loads(content)
+            return {
+                "keywords": parsed.get("keywords", query).strip(),
+                "location": parsed.get("location", "").strip()
+            }
+    except Exception as e:
+        print(f"[Query Parser] LLM parsing failed ({e}), falling back to regex parser.")
+        # Fallback to regex pattern matching
+        location = ""
+        keywords = query
+        match = re.search(r"\s+(?:in|at|near)\s+([a-zA-Z\s,]+)$", query, re.IGNORECASE)
+        if match:
+            location = match.group(1).strip()
+            keywords = query[:match.start()].strip()
+        return {"keywords": keywords, "location": location}
+
+
 async def scrape_all(query: str, limit_per_source: int = 5) -> list[dict]:
     """
     Runs all scrapers in parallel and returns combined results.
-    Intelligently extracts location from the search query (e.g. "in uae")
-    to pass as a location filter to external APIs.
+    Intelligently extracts location from search queries using Ollama LLM.
     """
-    location = ""
-    keywords = query
+    parsed = await _llm_parse_query(query)
+    keywords = parsed.get("keywords", query)
+    location = parsed.get("location", "")
 
-    # Parse location from queries like "ai engineer in uae" or "software engineer at dubai"
-    match = re.search(r"\s+(?:in|at|near)\s+([a-zA-Z\s,]+)$", query, re.IGNORECASE)
-    if match:
-        location = match.group(1).strip()
-        keywords = query[:match.start()].strip()
+    print(f"[Scraper] Query parsed: keywords='{keywords}', location='{location}'")
 
     import asyncio
     results = await asyncio.gather(
