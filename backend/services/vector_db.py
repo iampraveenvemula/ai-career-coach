@@ -47,3 +47,17 @@ def search_jobs(query_text: str, n_results: int = 5):
         n_results=n_results
     )
     return results
+
+def clear_vector_db():
+    """
+    Clears all jobs from the vector database by deleting and recreating the collection.
+    """
+    global jobs_collection
+    try:
+        client.delete_collection("jobs")
+        jobs_collection = client.get_or_create_collection(
+            name="jobs",
+            embedding_function=emb_fn
+        )
+    except Exception as e:
+        print(f"[VectorDB] Failed to clear collection: {e}")

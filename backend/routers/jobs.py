@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 import models
-from services.vector_db import add_jobs_to_vector_db, search_jobs
+from services.vector_db import add_jobs_to_vector_db, search_jobs, clear_vector_db
 from services.scraper import scrape_all
 import uuid
 
@@ -165,3 +165,21 @@ async def search_jobs_api(query: str = "", limit: int = 20, db: Session = Depend
         return {"results": jobs}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clear")
+async def clear_all_jobs(db: Session = Depends(get_db)):
+    """
+    Clears all job listings from SQLite and the Chroma vector database.
+    """
+    try:
+        # Delete all job rows in SQLite
+        db.query(models.Job).delete()
+        db.commit()
+        
+        # Clear Chroma collection
+        clear_vector_db()
+        
+        return {"status": "success", "message": "Successfully cleared all jobs from the database and vector index."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear jobs: {str(e)}")

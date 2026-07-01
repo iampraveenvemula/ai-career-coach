@@ -22,6 +22,7 @@ export function JobSearch() {
   const [jobs, setJobs] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isScraping, setIsScraping] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [scrapeMsg, setScrapeMsg] = useState("");
   const [selectedJob, setSelectedJob] = useState<any | null>(null);
 
@@ -52,6 +53,22 @@ export function JobSearch() {
       setScrapeMsg("Scrape failed. Check backend logs.");
     } finally {
       setIsScraping(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!window.confirm("Are you sure you want to clear all jobs from the database and vector index?")) return;
+    setIsClearing(true);
+    setScrapeMsg("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/jobs/clear`, { method: "POST" });
+      const data = await response.json();
+      setScrapeMsg("Database cleared.");
+      setJobs([]);
+    } catch (error) {
+      setScrapeMsg("Clear failed.");
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -86,12 +103,20 @@ export function JobSearch() {
       <div className="flex items-center gap-3 mb-5 shrink-0">
         <Button
           onClick={handleScrape}
-          disabled={isScraping}
+          disabled={isScraping || isClearing}
           variant="outline"
           className="h-9 px-5 rounded-full text-sm font-bold border-slate-300 text-slate-700 hover:border-slate-500 hover:bg-slate-50"
         >
           <RefreshCw className={`w-3.5 h-3.5 mr-2 ${isScraping ? "animate-spin" : ""}`} />
           {isScraping ? "Fetching from Google, LinkedIn, Remotive..." : "Fetch external jobs"}
+        </Button>
+        <Button
+          onClick={handleClear}
+          disabled={isScraping || isClearing}
+          variant="destructive"
+          className="h-9 px-5 rounded-full text-sm font-bold bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border border-red-200"
+        >
+          {isClearing ? "Clearing..." : "Clear Database"}
         </Button>
         {scrapeMsg && (
           <span className="text-sm font-semibold text-slate-500">{scrapeMsg}</span>
