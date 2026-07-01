@@ -56,9 +56,7 @@ export function JobSearch() {
   };
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/v1/jobs/ingest`, { method: "POST" })
-      .then(() => fetchJobs(""))
-      .catch(console.error);
+    fetchJobs("");
   }, []);
 
   const handleSearch = (e: React.FormEvent) => {
