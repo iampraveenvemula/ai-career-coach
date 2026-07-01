@@ -140,7 +140,14 @@ export function JobSearch() {
               </span>
             </div>
             <h3 className="text-lg font-bold text-slate-900 leading-snug mb-3 group-hover:text-slate-600 transition-colors">{job.title}</h3>
-            <p className="text-sm text-slate-600 font-semibold mb-1">{job.location}</p>
+            <div className="flex items-baseline justify-between gap-2 mb-1">
+              <span className="text-sm text-slate-650 font-semibold truncate">{job.location}</span>
+              {job.posted_at && (
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider shrink-0">
+                  Posted {new Date(job.posted_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                </span>
+              )}
+            </div>
             <p className="text-sm font-bold text-slate-800">{job.salary_range}</p>
             <p className="text-sm text-slate-500 font-medium line-clamp-2 mt-4 leading-relaxed mb-4">{job.description_text}</p>
             

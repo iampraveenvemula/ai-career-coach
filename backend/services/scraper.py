@@ -2,6 +2,7 @@
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
 Uses LLM to intelligently parse search queries into core keywords and location.
+Extracts posting dates and handles pagination to maximize listing counts.
 """
 
 import httpx
@@ -10,6 +11,7 @@ import re
 import os
 import json
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
@@ -31,7 +33,39 @@ Query: "ml engineering remote" -> {"keywords": "ml engineering", "location": "re
 """
 
 
-async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> list[dict]:
+def parse_relative_time(time_str: str) -> datetime:
+    """
+    Parses absolute or relative job posting dates into a datetime object.
+    Supports formats like: '2026-06-28', '2 hours ago', '3 days ago', '1 week ago'.
+    """
+    now = datetime.utcnow()
+    val_str = time_str.lower().strip()
+    try:
+        # Absolute ISO format e.g. "2026-06-29"
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", val_str):
+            return datetime.strptime(val_str, "%Y-%m-%d")
+        
+        # Relative strings
+        match = re.search(r"(\d+)\s+(hour|day|week|month|year)", val_str)
+        if match:
+            val = int(match.group(1))
+            unit = match.group(2)
+            if "hour" in unit:
+                return now - timedelta(hours=val)
+            elif "day" in unit:
+                return now - timedelta(days=val)
+            elif "week" in unit:
+                return now - timedelta(weeks=val)
+            elif "month" in unit:
+                return now - timedelta(days=val * 30)
+            elif "year" in unit:
+                return now - timedelta(days=val * 365)
+    except Exception:
+        pass
+    return now
+
+
+async def scrape_remotive(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
     Fetches jobs from the Remotive API (free, no auth required).
     Great for remote AI/ML/engineering roles.
@@ -62,10 +96,18 @@ async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> li
                 salary = "Not disclosed"
 
             loc = item.get("candidate_required_location", "Remote")
-            # If the user searched for a specific location, filter or label accordingly
             if location and location.lower() not in loc.lower() and loc.lower() != "worldwide":
                 # Skip if it doesn't match location criteria
                 continue
+
+            # Parse posted_at date
+            pub_date_str = item.get("publication_date", "")
+            posted_time = datetime.utcnow()
+            if pub_date_str:
+                try:
+                    posted_time = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00"))
+                except Exception:
+                    pass
 
             jobs.append({
                 "id": str(uuid.uuid4()),
@@ -76,6 +118,7 @@ async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> li
                 "url": item.get("url", ""),
                 "salary_range": salary,
                 "source": "Remotive",
+                "posted_at": posted_time
             })
         return jobs
     except Exception as e:
@@ -83,57 +126,82 @@ async def scrape_remotive(query: str, location: str = "", limit: int = 10) -> li
         return []
 
 
-async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 10) -> list[dict]:
+async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40) -> list[dict]:
     """
     Fetches jobs from LinkedIn's public guest job search page.
-    No authentication required — uses the public guest API.
+    Utilizes concurrent page queries to paginate and maximize search results.
     """
-    url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-    params = {"keywords": query, "location": location or "", "start": 0}
+    # LinkedIn returns up to 25 items per page. Calculate number of pages needed.
+    pages = (limit + 24) // 25
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
+    async def fetch_page(page_idx: int) -> list[dict]:
+        start = page_idx * 25
+        url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        params = {"keywords": query, "location": location or "", "start": start}
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code != 200:
+                    return []
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            cards = soup.find_all("div", class_="base-card")
+            
+            page_jobs = []
+            for card in cards:
+                title_el = card.find("h3", class_="base-search-card__title")
+                company_el = card.find("h4", class_="base-search-card__subtitle")
+                location_el = card.find("span", class_="job-search-card__location")
+                link_el = card.find("a", class_="base-card__full-link")
+                time_el = card.find("time")
+                
+                title = title_el.get_text(strip=True) if title_el else "Unknown"
+                company = company_el.get_text(strip=True) if company_el else "Unknown"
+                loc = location_el.get_text(strip=True) if location_el else (location or "Unknown")
+                job_url = link_el["href"] if link_el and link_el.get("href") else ""
+                
+                # Parse posted date
+                posted_time = datetime.utcnow()
+                if time_el:
+                    dt_attr = time_el.get("datetime")
+                    if dt_attr:
+                        posted_time = parse_relative_time(dt_attr)
+                    else:
+                        posted_time = parse_relative_time(time_el.text)
+                
+                desc = f"{title} at {company}. Location: {loc}."
+                
+                page_jobs.append({
+                    "id": str(uuid.uuid4()),
+                    "title": title,
+                    "company": company,
+                    "location": loc,
+                    "description_text": desc,
+                    "url": job_url.split("?")[0] if job_url else "",
+                    "salary_range": "Not disclosed",
+                    "source": "LinkedIn",
+                    "posted_at": posted_time
+                })
+            return page_jobs
+        except Exception as e:
+            print(f"[LinkedIn Page {page_idx}] Fetch failed: {e}")
+            return []
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        cards = soup.find_all("div", class_="base-card")
-
-        jobs = []
-        for card in cards[:limit]:
-            title_el = card.find("h3", class_="base-search-card__title")
-            company_el = card.find("h4", class_="base-search-card__subtitle")
-            location_el = card.find("span", class_="job-search-card__location")
-            link_el = card.find("a", class_="base-card__full-link")
-
-            title = title_el.get_text(strip=True) if title_el else "Unknown"
-            company = company_el.get_text(strip=True) if company_el else "Unknown"
-            loc = location_el.get_text(strip=True) if location_el else (location or "Unknown")
-            job_url = link_el["href"] if link_el and link_el.get("href") else ""
-
-            # LinkedIn guest page doesn't provide full descriptions
-            desc = f"{title} at {company}. Location: {loc}."
-
-            jobs.append({
-                "id": str(uuid.uuid4()),
-                "title": title,
-                "company": company,
-                "location": loc,
-                "description_text": desc,
-                "url": job_url.split("?")[0] if job_url else "",
-                "salary_range": "Not disclosed",
-                "source": "LinkedIn",
-            })
-        return jobs
-    except Exception as e:
-        print(f"[LinkedIn] Scrape failed: {e}")
-        return []
+    import asyncio
+    tasks = [fetch_page(i) for i in range(pages)]
+    page_results = await asyncio.gather(*tasks)
+    
+    jobs = []
+    for r in page_results:
+        jobs.extend(r)
+        
+    return jobs[:limit]
 
 
-async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) -> list[dict]:
+async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
     Scrapes job listings from Google search results.
     Uses standard web search with job-related queries.
@@ -143,9 +211,9 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
         search_query = f"{query} jobs hiring in {location}"
 
     url = "https://www.google.com/search"
-    params = {"q": search_query, "num": 20}
+    params = {"q": search_query, "num": limit + 10}
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
     try:
@@ -154,11 +222,9 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
             resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Try to find structured job cards from Google's job panel
         jobs = []
 
-        # Look for job listing structured data
+        # Look for Google job panel listings
         for item in soup.find_all("div", class_="BjJfJf"):  # Google job card class
             title_el = item.find("div", class_="BjJfJf")
             if title_el:
@@ -171,9 +237,10 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
                     "url": f"https://www.google.com/search?q={query}+{location}+jobs&ibp=htl;jobs",
                     "salary_range": "Not disclosed",
                     "source": "Google",
+                    "posted_at": datetime.utcnow()
                 })
 
-        # Fallback: extract from search result snippets
+        # Fallback snippet parser
         if not jobs:
             for result in soup.find_all("div", class_="g")[:limit]:
                 title_el = result.find("h3")
@@ -182,7 +249,6 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
 
                 if title_el:
                     title_text = title_el.get_text(strip=True)
-                    # Filter to only job-related results
                     if any(kw in title_text.lower() for kw in ["job", "hiring", "career", "engineer", "scientist", "developer", "position"]):
                         snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
                         href = link_el["href"] if link_el and link_el.get("href") else ""
@@ -196,6 +262,7 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 10) ->
                             "url": href,
                             "salary_range": "Not disclosed",
                             "source": "Google",
+                            "posted_at": datetime.utcnow()
                         })
 
         return jobs[:limit]
@@ -232,7 +299,6 @@ async def _llm_parse_query(query: str) -> dict:
             }
     except Exception as e:
         print(f"[Query Parser] LLM parsing failed ({e}), falling back to regex parser.")
-        # Fallback to regex pattern matching
         location = ""
         keywords = query
         match = re.search(r"\s+(?:in|at|near)\s+([a-zA-Z\s,]+)$", query, re.IGNORECASE)
@@ -242,7 +308,7 @@ async def _llm_parse_query(query: str) -> dict:
         return {"keywords": keywords, "location": location}
 
 
-async def scrape_all(query: str, limit_per_source: int = 5) -> list[dict]:
+async def scrape_all(query: str, limit_per_source: int = 40) -> list[dict]:
     """
     Runs all scrapers in parallel and returns combined results.
     Intelligently extracts location from search queries using Ollama LLM.

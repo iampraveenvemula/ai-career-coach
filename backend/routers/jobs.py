@@ -107,7 +107,7 @@ async def scrape_external_jobs(query: str = "AI Engineer", db: Session = Depends
     Scrapes Google, LinkedIn, and Remotive for real job listings,
     deduplicates, and saves them to the DB + vector store.
     """
-    scraped = await scrape_all(query, limit_per_source=20)
+    scraped = await scrape_all(query, limit_per_source=40)
 
     if not scraped:
         return {"status": "empty", "message": "No jobs found from external sources.", "count": 0}
@@ -146,12 +146,12 @@ async def scrape_external_jobs(query: str = "AI Engineer", db: Session = Depends
 
 
 @router.get("/search")
-async def search_jobs_api(query: str = "", limit: int = 20, db: Session = Depends(get_db)):
+async def search_jobs_api(query: str = "", limit: int = 100, db: Session = Depends(get_db)):
     """
     Searches jobs via semantic vector search.
     """
     if not query:
-        jobs = db.query(models.Job).limit(limit).all()
+        jobs = db.query(models.Job).order_by(models.Job.posted_at.desc()).limit(limit).all()
         return {"results": jobs}
 
     try:
@@ -162,7 +162,9 @@ async def search_jobs_api(query: str = "", limit: int = 20, db: Session = Depend
             return {"results": []}
 
         jobs = db.query(models.Job).filter(models.Job.id.in_(ids)).all()
-        return {"results": jobs}
+        # Sort results to keep most recent jobs at the top
+        jobs_sorted = sorted(jobs, key=lambda j: j.posted_at or datetime.min, reverse=True)
+        return {"results": jobs_sorted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
