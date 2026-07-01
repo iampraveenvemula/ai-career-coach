@@ -2,7 +2,8 @@
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
 Uses LLM to intelligently parse search queries into core keywords and location.
-Extracts posting dates and handles pagination to maximize listing counts.
+Extracts posting dates, implements pagination, and provides a silent failover
+to DuckDuckGo HTML Search when Google CAPTCHAs blocks raw requests.
 """
 
 import httpx
@@ -204,71 +205,118 @@ async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40)
 async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
     Scrapes job listings from Google search results.
-    Uses standard web search with job-related queries.
+    Uses class-agnostic h3/a parsing, and includes a silent failover to DuckDuckGo
+    HTML Search (which doesn't enforce CAPTCHAs) in case Google blocks the bot.
     """
     search_query = f"{query} jobs hiring"
     if location:
         search_query = f"{query} jobs hiring in {location}"
 
+    # Try Google Search first
     url = "https://www.google.com/search"
     params = {"q": search_query, "num": limit + 10}
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
     }
+
+    is_blocked = False
+    jobs = []
 
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
+            
+        is_blocked = "captcha" in resp.text.lower() or "unusual traffic" in resp.text.lower() or resp.status_code != 200
+        
+        if not is_blocked:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            h3s = soup.find_all("h3")
+            for h3 in h3s:
+                title_text = h3.get_text(strip=True)
+                parent_a = h3.find_parent("a")
+                if not parent_a:
+                    parent = h3.parent
+                    while parent and parent.name != "html":
+                        a_el = parent.find("a")
+                        if a_el and a_el.get("href"):
+                            parent_a = a_el
+                            break
+                        parent = parent.parent
+                href = parent_a.get("href") if parent_a else ""
+                if not href or not href.startswith("http") or "google.com" in href:
+                    continue
+                
+                if any(kw in title_text.lower() for kw in ["job", "hiring", "career", "engineer", "scientist", "developer", "position", "vacancy", "apply"]):
+                    snippet = ""
+                    parent = h3.parent
+                    for _ in range(4):
+                        if parent:
+                            spans = parent.find_all("span")
+                            for s in spans:
+                                t = s.get_text(strip=True)
+                                if len(t) > 45 and t != title_text:
+                                    snippet = t
+                                    break
+                            if snippet:
+                                break
+                            parent = parent.parent
+                            
+                    jobs.append({
+                        "id": str(uuid.uuid4()),
+                        "title": title_text,
+                        "company": "Via Google Search",
+                        "location": location or "See listing",
+                        "description_text": snippet[:500] if snippet else title_text,
+                        "url": href,
+                        "salary_range": "Not disclosed",
+                        "source": "Google",
+                        "posted_at": datetime.utcnow()
+                    })
+    except Exception as e:
+        print(f"[Google Scraper] HTTP/Parsing failed: {e}")
+        is_blocked = True
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        jobs = []
-
-        # Look for Google job panel listings
-        for item in soup.find_all("div", class_="BjJfJf"):  # Google job card class
-            title_el = item.find("div", class_="BjJfJf")
-            if title_el:
-                jobs.append({
-                    "id": str(uuid.uuid4()),
-                    "title": title_el.get_text(strip=True),
-                    "company": "Via Google",
-                    "location": location or "See listing",
-                    "description_text": title_el.get_text(strip=True),
-                    "url": f"https://www.google.com/search?q={query}+{location}+jobs&ibp=htl;jobs",
-                    "salary_range": "Not disclosed",
-                    "source": "Google",
-                    "posted_at": datetime.utcnow()
-                })
-
-        # Fallback snippet parser
-        if not jobs:
-            for result in soup.find_all("div", class_="g")[:limit]:
-                title_el = result.find("h3")
-                snippet_el = result.find("span", class_="aCOpRe") or result.find("div", class_="VwiC3b")
-                link_el = result.find("a")
-
-                if title_el:
-                    title_text = title_el.get_text(strip=True)
-                    if any(kw in title_text.lower() for kw in ["job", "hiring", "career", "engineer", "scientist", "developer", "position"]):
-                        snippet = snippet_el.get_text(strip=True) if snippet_el else title_text
-                        href = link_el["href"] if link_el and link_el.get("href") else ""
-
+    # FAILOVER: If Google blocks with CAPTCHA or yields no jobs, scrape DuckDuckGo HTML Search
+    if not jobs or is_blocked:
+        print("[Google Scraper] Empty search or CAPTCHA detected. Failing over to DuckDuckGo search...")
+        try:
+            ddg_url = "https://html.duckduckgo.com/html/"
+            ddg_params = {"q": search_query}
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(ddg_url, params=ddg_params, headers=headers)
+                
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                results = soup.find_all("div", class_="web-result")
+                for res in results[:limit]:
+                    a_el = res.find("a", class_="result__a")
+                    snippet_el = res.find("a", class_="result__snippet")
+                    
+                    if a_el:
+                        title_text = a_el.get_text(strip=True)
+                        href = a_el.get("href") or ""
+                        if not href or not href.startswith("http") or "duckduckgo.com" in href:
+                            continue
+                            
+                        snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                        
                         jobs.append({
                             "id": str(uuid.uuid4()),
                             "title": title_text,
-                            "company": "Via Google Search",
+                            "company": "Via Google Search (DDG Failover)",
                             "location": location or "See listing",
-                            "description_text": snippet[:500],
+                            "description_text": snippet[:500] if snippet else title_text,
                             "url": href,
                             "salary_range": "Not disclosed",
                             "source": "Google",
                             "posted_at": datetime.utcnow()
                         })
+        except Exception as e:
+            print(f"[Google Scraper Failover] DDG scrape failed: {e}")
 
-        return jobs[:limit]
-    except Exception as e:
-        print(f"[Google] Scrape failed: {e}")
-        return []
+    return jobs[:limit]
 
 
 async def _llm_parse_query(query: str) -> dict:
