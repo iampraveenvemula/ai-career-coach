@@ -4,7 +4,7 @@
 import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCw } from "lucide-react";
+import { Search, RefreshCw, ExternalLink } from "lucide-react";
 import { motion } from "framer-motion";
 import { API_BASE_URL } from "@/lib/config";
 import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogHeader } from "@/components/ui/dialog";
@@ -142,7 +142,21 @@ export function JobSearch() {
             <h3 className="text-lg font-bold text-slate-900 leading-snug mb-3 group-hover:text-slate-600 transition-colors">{job.title}</h3>
             <p className="text-sm text-slate-600 font-semibold mb-1">{job.location}</p>
             <p className="text-sm font-bold text-slate-800">{job.salary_range}</p>
-            <p className="text-sm text-slate-500 font-medium line-clamp-2 mt-4 leading-relaxed">{job.description_text}</p>
+            <p className="text-sm text-slate-500 font-medium line-clamp-2 mt-4 leading-relaxed mb-4">{job.description_text}</p>
+            
+            {job.url && (
+              <div className="flex justify-end pt-3 border-t border-slate-100 mt-auto">
+                <a
+                  href={job.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-all py-1 px-3 bg-indigo-50 hover:bg-indigo-100 rounded-full border border-indigo-150 shadow-sm"
+                >
+                  Apply Directly <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
           </motion.div>
         ))}
 

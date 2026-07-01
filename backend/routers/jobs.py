@@ -107,7 +107,7 @@ async def scrape_external_jobs(query: str = "AI Engineer", db: Session = Depends
     Scrapes Google, LinkedIn, and Remotive for real job listings,
     deduplicates, and saves them to the DB + vector store.
     """
-    scraped = await scrape_all(query, limit_per_source=5)
+    scraped = await scrape_all(query, limit_per_source=20)
 
     if not scraped:
         return {"status": "empty", "message": "No jobs found from external sources.", "count": 0}
