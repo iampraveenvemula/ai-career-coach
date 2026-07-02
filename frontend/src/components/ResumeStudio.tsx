@@ -727,13 +727,14 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
       let currentText = rawResume;
       let lastMissing: string[] = [];
       let accumulatedLogs: any[] = [];
-      const maxPasses = 4;
+      const maxPasses = 10;
       
       for (let p = 1; p <= maxPasses; p++) {
         let statusMsg = `Pass ${p}: Initial structuring & alignment...`;
         if (p === 2) statusMsg = "Pass 2: Reframing projects with XYZ metrics...";
         if (p === 3) statusMsg = "Pass 3: Integrating remaining target tech skills...";
         if (p === 4) statusMsg = "Pass 4: Optimizing semantic similarity & details...";
+        if (p >= 5) statusMsg = `Pass ${p}: Fine-tuning recruiter quality audit (Pass ${p}/10)...`;
         
         setCurrentPassName(statusMsg);
         

@@ -23,7 +23,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 
 STRUCTURE_PROMPT = """You are a Senior Technical Recruiter at a top-tier technology company (like OpenAI, Google, or Stripe). You only select resumes that showcase extreme technical depth, clear engineering ownership, and quantified impact. Generic resumes that just list keywords without context are instantly rejected.
 
-Your goal is to produce a clean, ATS-optimized, 1–2 page resume in plain text based on the candidate's raw resume and the target job description.
+Your goal is to produce a clean, ATS-optimized resume in plain text based on the candidate's raw resume and the target job description. The final resume MUST be strictly under 2 pages.
 
 Your output must have EXACTLY the following four sections in this order:
 
@@ -41,30 +41,39 @@ PROFESSIONAL SUMMARY
 - Start with a strong professional hook that incorporates the target job title (e.g., "Results-driven Senior AI Engineer with 6+ years of experience...") and years of experience.
 - Directly highlight 2–3 advanced technical competencies or architectural achievements that align with the core requirements of the Job Description.
 - Draw ONLY on facts present in the resume. Do NOT invent experience.
+- DO NOT use any emojis, checkmarks, icons, or smileys.
 
 SKILLS
 - List technical and professional skills present in the candidate's raw resume.
 - Group them logically into categories (e.g., Languages, Frameworks & Libraries, Tools & Platforms, Methodologies).
 - Within each category, prioritize the tools that appear in the job description or keyword targets by listing them first.
+- Format skills as a simple plain text categorized list, e.g.:
+    Languages: Python, Java, Go
+    Frameworks: PyTorch, FastAPI, Django
+- DO NOT use bullet points (•) or lists in the SKILLS section.
 - Normalize terms to match the Job Description's keywords (e.g., use "PostgreSQL" instead of "Postgres").
 - Do NOT add skills the candidate does not have.
 
 EXPERIENCE
 - Include EVERY job from the candidate's original resume. Do NOT drop any role.
-- Format each role header EXACTLY as:
+- Each job entry MUST have exactly one header line formatted EXACTLY as:
     Company Name | Job Title | Start Month Year – End Month Year (or Present)
   followed by 3–5 bullet points starting with •
+- DO NOT repeat company headers. List all bullet points and projects for a single job entry under ONE single header line. Do NOT split a single job entry into multiple headers.
 - For each bullet point, follow the XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]" using strong active verbs and specific engineering detail.
 - DO NOT use weak words like "assisted", "helped", "responsible for", "participated in". Start every bullet with ownership verbs: "Spearheaded", "Architected", "Engineered", "Optimized", "Scaled", "Pioneered".
 - Every experience bullet MUST contain a quantitative metric showing impact (e.g., latency reduction ms/%, compute cost reduction %, throughput scaling, or data processing volumes).
 - Highlight specific architectural details (e.g., distributed model training using PyTorch FSDP/DeepSpeed, serving optimization with vLLM/Triton, LoRA/QLoRA fine-tuning hyperparameters, or chunking/embedding RAG strategies).
-- Rewrite accomplishments to match the core duties listed in the Job Description, but do NOT invent fake company names or work periods.
+- Rewrite accomplishments to match the core duties listed in the Job Description.
+- DO NOT invent, change, or fake the actual company names, schools, or employment dates/tenures.
+- DO NOT use any emojis, checkmarks, icons, or smileys.
 
 EDUCATION
 - List degrees in reverse chronological order.
 - Format: Degree, Field of Study | Institution | Year
 - Keep it brief — 1–2 lines per degree.
 - Include certifications or relevant coursework on a separate line under the degree if present.
+- DO NOT use any emojis, checkmarks, icons, or smileys.
 
 ---
 
@@ -430,19 +439,25 @@ Rules:
 1. ONLY reframe or expand projects and bullet points under existing jobs.
 2. DO NOT change, invent, or fake any company names, universities, or work periods/dates.
 3. Every bullet point MUST start with a strong active verb and follow the XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]" using quantified metrics (latency %, cost %, throughput, utilization) and deep technical details (e.g., distributed PyTorch FSDP, serving with vLLM/Triton, quantization, RAG vector search).
-4. Write similar project ideas or accomplishments that you think best fit the job description to showcase the missing skills, but keep them grounded in realistic software/ML engineering context.
-5. Format all outputs exactly as the input resume:
+4. DO NOT repeat company headers. List all bullet points and projects for a single job entry under ONE single header line. Do NOT split a single job entry into multiple headers.
+5. Format skills as a simple plain text categorized list, e.g.:
+    Languages: Python, Java, Go
+    Frameworks: PyTorch, FastAPI, Django
+   DO NOT use bullet points (•) or lists in the SKILLS section.
+6. The entire resume MUST be strictly under 2 pages. Limit bullets per job to 3–5 points.
+7. DO NOT use any emojis, checkmarks, icons, or smileys anywhere in the resume text.
+8. Format all outputs exactly as the input resume:
    - Headers: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, EDUCATION
    - Bullet points starting with •
    - Company headers starting with Company Name | Job Title | Dates
-6. Output ONLY the resume text. No explanations, introductory notes, or markdown fences.
+9. Output ONLY the resume text. No explanations, introductory notes, or markdown fences.
 """
 
 async def optimize_resume_agent(
     resume_text: str,
     job_description: str,
     target_title: str = "",
-    max_passes: int = 3,
+    max_passes: int = 9,
     status_callback=None
 ) -> tuple[str, int, list[dict]]:
     """
