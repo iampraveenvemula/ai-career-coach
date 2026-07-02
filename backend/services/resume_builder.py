@@ -68,6 +68,22 @@ EXPERIENCE
 - DO NOT invent, change, or fake the actual company names, schools, or employment dates/tenures.
 - DO NOT use any emojis, checkmarks, icons, or smileys.
 
+TEMPORAL TECH ERA LIMITATIONS (CRITICAL RECRUITER RULES):
+To avoid anachronisms and instantly pass recruiter checks, you MUST align technologies with the dates they actually existed. Prohibit placing tools in tenures before they were launched:
+- For tenures ending before 2017:
+  * DO NOT use: PyTorch, Transformers, LLMs, Generative AI, RAG, FastAPI, vLLM, LangChain, Llama, OpenAI, GPT.
+  * DO use: Python, C++, Java, Scikit-learn, Pandas, NumPy, Django, Flask, AWS (EC2/S3/RDS), SQL, NLTK, spaCy, LSTMs, CNNs, Random Forests, XGBoost.
+- For tenures ending before 2021:
+  * DO NOT use: vLLM, LangChain, Llama-2/3, ChatGPT, vector databases (Chroma/Pinecone) for RAG, or prompt engineering.
+  * DO use: TensorFlow, PyTorch, BERT, Transformers, standard REST APIs (FastAPI/Flask), Docker, Kubernetes, AWS.
+- For tenures post-2021:
+  * You may use modern Generative AI, LLMs, RAG, vector databases, and prompt engineering.
+
+DOMAIN LOGIC & CONTEXT (CRITICAL ARCHITECT RULES):
+- NEVER place keywords blindly. They must make architectural sense.
+- Do NOT place text/NLP technologies (like RAG, prompt engineering, LLMs) inside structured numeric/database projects (like forecasting, regression, query caching, or server optimization) unless there is a clear sub-project (e.g. building a chatbot interface for database metrics).
+- Provide the engineering context: for example, if RAG is used, specify what kind of text is indexed (e.g. indexing 50k+ pages of technical manuals or enterprise documentation PDFs).
+
 EDUCATION
 - List degrees in reverse chronological order.
 - Format: Degree, Field of Study | Institution | Year
@@ -176,7 +192,11 @@ async def _llm_rewrite(
     for line in content.splitlines():
         cleaned_line = re.sub(r"^\s*[•\-\*·\s]+[•\-\*·]\s*", "• ", line)
         cleaned_lines.append(cleaned_line)
-    return "\n".join(cleaned_lines)
+    final_resume = "\n".join(cleaned_lines)
+    
+    # Run temporal guard cleanup
+    final_resume = await clean_temporal_anachronisms(final_resume)
+    return final_resume
 
 
 async def _llm_refine(current_resume: str, instruction: str) -> str:
@@ -446,6 +466,23 @@ Rules:
    DO NOT use bullet points (•) or lists in the SKILLS section.
 6. The entire resume MUST be strictly under 2 pages. Limit bullets per job to 3–5 points.
 7. DO NOT use any emojis, checkmarks, icons, or smileys anywhere in the resume text.
+
+TEMPORAL TECH ERA LIMITATIONS (CRITICAL RECRUITER RULES):
+To avoid anachronisms and instantly pass recruiter checks, you MUST align technologies with the dates they actually existed. Prohibit placing tools in tenures before they were launched:
+- For tenures ending before 2017:
+  * DO NOT use: PyTorch, Transformers, LLMs, Generative AI, RAG, FastAPI, vLLM, LangChain, Llama, OpenAI, GPT.
+  * DO use: Python, C++, Java, Scikit-learn, Pandas, NumPy, Django, Flask, AWS (EC2/S3/RDS), SQL, NLTK, spaCy, LSTMs, CNNs, Random Forests, XGBoost.
+- For tenures ending before 2021:
+  * DO NOT use: vLLM, LangChain, Llama-2/3, ChatGPT, vector databases (Chroma/Pinecone) for RAG, or prompt engineering.
+  * DO use: TensorFlow, PyTorch, BERT, Transformers, standard REST APIs (FastAPI/Flask), Docker, Kubernetes, AWS.
+- For tenures post-2021:
+  * You may use modern Generative AI, LLMs, RAG, vector databases, and prompt engineering.
+
+DOMAIN LOGIC & CONTEXT (CRITICAL ARCHITECT RULES):
+- NEVER place keywords blindly. They must make architectural sense.
+- Do NOT place text/NLP technologies (like RAG, prompt engineering, LLMs) inside structured numeric/database projects (like forecasting, regression, query caching, or server optimization) unless there is a clear sub-project (e.g. building a chatbot interface for database metrics).
+- Provide the engineering context: for example, if RAG is used, specify what kind of text is indexed (e.g. indexing 50k+ pages of technical manuals or enterprise documentation PDFs).
+
 8. Format all outputs exactly as the input resume:
    - Headers: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, EDUCATION
    - Bullet points starting with •
@@ -530,6 +567,7 @@ async def optimize_resume_agent(
                 cleaned_line = re.sub(r"^\s*[•\-\*·\s]+[•\-\*·]\s*", "• ", line)
                 cleaned_lines.append(cleaned_line)
             current_resume = "\n".join(cleaned_lines)
+            current_resume = await clean_temporal_anachronisms(current_resume)
             
         # Re-evaluate
         eval_result = calculate_industry_score(current_resume, job_description, target_title)
@@ -599,6 +637,9 @@ async def optimize_pass_agent(
         cleaned_lines.append(cleaned_line)
     final_resume = "\n".join(cleaned_lines)
     
+    # Run temporal guard cleanup
+    final_resume = await clean_temporal_anachronisms(final_resume)
+    
     # Calculate score
     eval_result = calculate_industry_score(final_resume, job_description, target_title)
     
@@ -609,3 +650,82 @@ async def optimize_pass_agent(
         "missing": eval_result["missing"],
         "breakdown": eval_result["breakdown"]
     }
+
+
+FORBIDDEN_PRE_2017 = {"pytorch", "fastapi", "rag", "llm", "transformer", "vllm", "langchain", "llama", "gpt", "openai"}
+
+async def clean_temporal_anachronisms(resume_text: str) -> str:
+    """
+    Parses the resume, detects roles ending before 2017, and rewrites bullets that
+    erroneously include modern AI technologies.
+    """
+    lines = resume_text.splitlines()
+    cleaned_lines = []
+    
+    current_job_header = None
+    is_pre_2017_job = False
+    
+    for line in lines:
+        stripped = line.strip()
+        # Detect job header line (e.g. "Company | Title | 2012 - 2016")
+        if "|" in line and not line.startswith(("•", "-", "*", "·")) and len(line.split("|")) >= 3:
+            current_job_header = line
+            # Extract all years (4 digits)
+            years = [int(y) for y in re.findall(r"\b(20\d{2})\b", line)]
+            # If all years in the header are <= 2016, this is a pre-2017 job!
+            is_pre_2017_job = len(years) > 0 and all(y <= 2016 for y in years)
+            cleaned_lines.append(line)
+        elif is_pre_2017_job and stripped.startswith("•"):
+            bullet_text = stripped.lstrip("•-*· ").strip()
+            # Check if this bullet point has forbidden keywords
+            found_forbidden = [w for w in FORBIDDEN_PRE_2017 if re.search(r'\b' + re.escape(w) + r'\b', bullet_text, re.IGNORECASE)]
+            if found_forbidden:
+                print(f"[Temporal Guard] Found forbidden keywords {found_forbidden} in pre-2017 role: {bullet_text}")
+                # Rewrite this specific bullet using a quick targeted LLM call to use classical ML/NLP
+                rewritten_bullet = await _llm_rewrite_old_bullet(bullet_text)
+                cleaned_lines.append(f"• {rewritten_bullet}")
+            else:
+                cleaned_lines.append(line)
+        else:
+            cleaned_lines.append(line)
+            
+    return "\n".join(cleaned_lines)
+
+
+async def _llm_rewrite_old_bullet(bullet_text: str) -> str:
+    """Rewrites a bullet point to replace post-2017 technologies with classical tech."""
+    prompt = (
+        "You are an expert technical resume editor. "
+        "The following resume bullet point describes an experience from 2012-2016, "
+        "but it erroneously mentions modern post-2017 technologies (like PyTorch, LLMs, RAG, FastAPI, Transformers). "
+        "Rewrite this bullet point to maintain the exact same impact, metrics, and business value, "
+        "but replace the modern technologies with historically accurate technologies of that era (e.g. use Python, Scikit-Learn, LSTMs, CNNs, Django, Flask, SQL, NLTK, spaCy, or Java). "
+        "Do NOT change any numbers or metrics. Return ONLY the rewritten bullet point text (no bullet prefix, no explanations)."
+    )
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": f"Bullet point to rewrite:\n{bullet_text}"}
+        ],
+        "stream": False
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            response.raise_for_status()
+        content = response.json().get("message", {}).get("content", "").strip()
+        content = re.sub(r"^```(?:markdown|text)?|```$", "", content, flags=re.MULTILINE).strip()
+        content = content.lstrip("•-*· ").strip()
+        return content
+    except Exception as e:
+        print(f"[Temporal Guard] Failed to rewrite bullet point: {e}")
+        # Fallback to basic string replacement
+        cleaned = bullet_text
+        cleaned = re.sub(r"\bpytorch\b", "TensorFlow/Keras", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bfastapi\b", "Flask", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bllms?\b", "NLP models", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\brag\b", "information retrieval systems", cleaned, flags=re.IGNORECASE)
+        return cleaned
