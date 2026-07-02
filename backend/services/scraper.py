@@ -2,9 +2,7 @@
 Job scraper service that fetches real listings from external sources
 and normalizes them for ingestion into the local DB + vector store.
 Uses LLM to intelligently parse search queries into core keywords and location.
-Uses direct ATS searches on Google, and fails over to Mojeek Search (which has
-zero bot CAPTCHA blocks) to guarantee individual direct job postings are retrieved.
-Resolves full job descriptions from target ATS pages.
+Retrieves complete full job descriptions for LinkedIn guest postings and Greenhouse/Lever/Workable ATS listings.
 """
 
 import httpx
@@ -66,6 +64,38 @@ def parse_relative_time(time_str: str) -> datetime:
     except Exception:
         pass
     return now
+
+
+def extract_linkedin_job_id(url: str) -> str | None:
+    """
+    Parses the numeric LinkedIn job ID from the view URL.
+    """
+    match = re.search(r"/view/.*?(\d+)", url)
+    if match:
+        return match.group(1)
+    match = re.search(r"-(\d+)(?:\?|$)", url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def is_specific_job_url(url: str) -> bool:
+    """
+    Returns True if the URL points to a specific job detail page rather than a company job board.
+    """
+    parsed = urlparse(url)
+    netloc = parsed.netloc.lower()
+    path_parts = [p for p in parsed.path.split("/") if p]
+    
+    if "greenhouse.io" in netloc:
+        return "jobs" in path_parts and len(path_parts) >= 3
+    elif "lever.co" in netloc:
+        return len(path_parts) >= 2
+    elif "workable.com" in netloc:
+        return "j" in path_parts and len(path_parts) >= 3
+    elif "ashby.co" in netloc:
+        return len(path_parts) >= 2
+    return False
 
 
 def extract_company_and_title(title: str, url: str) -> tuple[str, str]:
@@ -144,6 +174,35 @@ async def fetch_ats_job_description(url: str, default_desc: str = "") -> str:
     return default_desc
 
 
+async def fetch_linkedin_job_description(url: str, default_desc: str = "") -> str:
+    """
+    Fetches the complete job description text directly from LinkedIn's guest API endpoint.
+    """
+    job_id = extract_linkedin_job_id(url)
+    if not job_id:
+        return default_desc
+        
+    desc_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            resp = await client.get(desc_url, headers=headers)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                desc_div = soup.find("div", class_="description__text") or soup.find("div", class_="show-more-less-html")
+                if desc_div:
+                    for el in desc_div(["script", "style"]):
+                        el.decompose()
+                    text = desc_div.get_text(separator=" ", strip=True)
+                    if len(text) > 50:
+                        return text[:4000]
+    except Exception as e:
+        print(f"[LinkedIn Desc] Failed to fetch for job {job_id}: {e}")
+    return default_desc
+
+
 async def scrape_remotive(query: str, location: str = "", limit: int = 30) -> list[dict]:
     """
     Fetches jobs from the Remotive API (free, no auth required).
@@ -168,7 +227,7 @@ async def scrape_remotive(query: str, location: str = "", limit: int = 30) -> li
             desc_html = item.get("description", "")
             desc_text = BeautifulSoup(desc_html, "html.parser").get_text(separator=" ", strip=True)
             # Truncate for storage
-            desc_text = desc_text[:1000]
+            desc_text = desc_text[:4000]
 
             salary = item.get("salary", "")
             if not salary:
@@ -207,10 +266,8 @@ async def scrape_remotive(query: str, location: str = "", limit: int = 30) -> li
 
 async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40) -> list[dict]:
     """
-    Fetches jobs from LinkedIn's public guest job search page.
-    Utilizes concurrent page queries to paginate and maximize search results.
+    Fetches jobs from LinkedIn's public guest job search page and extracts full descriptions.
     """
-    # LinkedIn returns up to 25 items per page. Calculate number of pages needed.
     pages = (limit + 24) // 25
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -251,14 +308,10 @@ async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40)
                     else:
                         posted_time = parse_relative_time(time_el.text)
                 
-                desc = f"{title} at {company}. Location: {loc}."
-                
                 page_jobs.append({
-                    "id": str(uuid.uuid4()),
                     "title": title,
                     "company": company,
                     "location": loc,
-                    "description_text": desc,
                     "url": job_url.split("?")[0] if job_url else "",
                     "salary_range": "Not disclosed",
                     "source": "LinkedIn",
@@ -273,11 +326,21 @@ async def scrape_linkedin_guest(query: str, location: str = "", limit: int = 40)
     tasks = [fetch_page(i) for i in range(pages)]
     page_results = await asyncio.gather(*tasks)
     
-    jobs = []
+    raw_listings = []
     for r in page_results:
-        jobs.extend(r)
+        raw_listings.extend(r)
         
-    return jobs[:limit]
+    raw_listings = raw_listings[:limit]
+    
+    # Fetch full descriptions in parallel for all LinkedIn jobs
+    async def process_linkedin_job(job_dict: dict) -> dict:
+        full_desc = await fetch_linkedin_job_description(job_dict["url"], f"{job_dict['title']} at {job_dict['company']}.")
+        job_dict["id"] = str(uuid.uuid4())
+        job_dict["description_text"] = full_desc
+        return job_dict
+
+    processed_jobs = await asyncio.gather(*(process_linkedin_job(jl) for jl in raw_listings))
+    return list(processed_jobs)
 
 
 async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) -> list[dict]:
@@ -327,7 +390,10 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                 if not href or not href.startswith("http") or "google.com" in href:
                     continue
                 
-                # Fetch snippets
+                # Verify that it points to a specific job listing page
+                if not is_specific_job_url(href):
+                    continue
+
                 snippet = ""
                 parent = h3.parent
                 for _ in range(4):
@@ -355,7 +421,6 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
     if not jobs_raw or is_blocked:
         print("[Google Scraper] Google search blocked/empty. Failing over to Mojeek...")
         try:
-            # We run simple natural keywords search per domain to get targeted results
             mojeek_url = "https://www.mojeek.com/search"
             
             async def run_mojeek_query(domain: str):
@@ -374,9 +439,9 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
                             netloc = parsed_link.netloc.lower()
                             
                             if any(d in netloc for d in ["greenhouse.io", "lever.co", "workable.com", "ashby.co"]):
-                                path_parts = [p for p in parsed_link.path.split("/") if p]
-                                if len(path_parts) < 1:
-                                    continue # Skip empty home domains
+                                # Filter out indexes, keep only direct job posting URLs
+                                if not is_specific_job_url(href):
+                                    continue
                                 
                                 jobs_raw.append({
                                     "title": title_text or "Job Opportunity",
@@ -402,7 +467,6 @@ async def scrape_google_jobs(query: str, location: str = "", limit: int = 30) ->
         if comp == "Unknown" and tit == "Unknown":
             return None
             
-        # Retrieve full job description from Greenhouse/Lever/Workable
         full_desc = await fetch_ats_job_description(url, raw_job["snippet"])
         
         return {
