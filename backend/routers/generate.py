@@ -2,7 +2,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from services.tailoring import tailor_resume, generate_cover_letter
-from services.resume_builder import build_tailored_resume_docx, _llm_rewrite, _llm_refine, generate_docx_bytes
+from services.resume_builder import (
+    build_tailored_resume_docx,
+    _llm_rewrite,
+    _llm_refine,
+    generate_docx_bytes,
+    optimize_resume_agent
+)
 
 router = APIRouter(
     prefix="/api/v1/generate",
@@ -20,6 +26,12 @@ class CoverLetterRequest(BaseModel):
     role: str
 
 class TailoredTextRequest(BaseModel):
+    resume_text: str
+    job_description: str
+    job_title: str = ""
+    company: str = ""
+
+class OptimizeRequest(BaseModel):
     resume_text: str
     job_description: str
     job_title: str = ""
@@ -92,6 +104,28 @@ async def api_generate_tailored_text(req: TailoredTextRequest):
             missing_keywords=missing[:25]
         )
         return {"status": "success", "resume_text": tailored_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/optimize")
+async def api_optimize_resume(req: OptimizeRequest):
+    """
+    Runs the iterative AI optimizer agent to adapt experience projects and bullets,
+    seeking a 95%+ target score on the industry-grade ATS scorer.
+    """
+    try:
+        optimized_text, final_score, logs = await optimize_resume_agent(
+            resume_text=req.resume_text,
+            job_description=req.job_description,
+            target_title=req.job_title
+        )
+        return {
+            "status": "success",
+            "resume_text": optimized_text,
+            "score": final_score,
+            "logs": logs
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

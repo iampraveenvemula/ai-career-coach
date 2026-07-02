@@ -158,12 +158,14 @@ function KeywordPanel({
   activeKeyword,
   onKeywordClick,
   previousScore,
+  agentLogs,
 }: {
   score: ScoreState | null;
   isLoading: boolean;
   activeKeyword: string | null;
   onKeywordClick: (kw: string) => void;
   previousScore: number | null;
+  agentLogs?: any[];
 }) {
   const delta = score && previousScore !== null ? score.score - previousScore : null;
 
@@ -239,6 +241,23 @@ function KeywordPanel({
               >
                 {kw}
               </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Agent Pass History */}
+      {agentLogs && agentLogs.length > 0 && (
+        <div className="border-t border-slate-100 pt-3 mt-1">
+          <p className="text-[10px] font-bold text-indigo-650 uppercase tracking-wider mb-2 px-1">
+            🤖 Agent Pass History
+          </p>
+          <div className="flex flex-col gap-1.5 px-1">
+            {agentLogs.map((log, index) => (
+              <div key={index} className="flex items-center justify-between text-[10px] bg-slate-50 p-2 rounded-lg border border-slate-150">
+                <span className="font-bold text-slate-700">Pass {log.pass}</span>
+                <span className="font-semibold text-indigo-600">{log.score}% Score</span>
+              </div>
             ))}
           </div>
         </div>
@@ -548,6 +567,29 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   const [history, setHistory] = useState<string[]>([]);
   const [scoreHistory, setScoreHistory] = useState<ScoreState[]>([]);
   const [atsScore, setAtsScore] = useState<ScoreState | null>(null);
+  const [agentLogs, setAgentLogs] = useState<any[]>([]);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const loadingSteps = [
+    "Analyzing target role and company requirements...",
+    "Pass 1: Restructuring resume into canonical ATS sections...",
+    "Evaluating initial ATS score and identifying tech gaps...",
+    "Pass 2: Reframing experiences to project direct matches...",
+    "Validating semantic cosine similarity overlap...",
+    "Pass 3: Weaving missing skills into technical categories...",
+    "Running final compliance check and hitting target score..."
+  ];
+
+  useEffect(() => {
+    let interval: any;
+    if (phase === "generating") {
+      setLoadingStep(0);
+      interval = setInterval(() => {
+        setLoadingStep((s) => Math.min(s + 1, loadingSteps.length - 1));
+      }, 7000);
+    }
+    return () => clearInterval(interval);
+  }, [phase]);
+
   const [isScoringLoading, setIsScoringLoading] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -692,8 +734,9 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
     setNoResume(false);
     setPhase("generating");
     setActiveKeyword(null);
+    setAgentLogs([]);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/generate/tailored-text`, {
+      const res = await fetch(`${API_BASE_URL}/api/v1/generate/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -704,16 +747,27 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Generation failed");
+      if (!res.ok) throw new Error(data.detail || "Optimization failed");
+      
       setResumeText(data.resume_text);
       setHistory([data.resume_text]);
       setScoreHistory([]);
-      setAtsScore(null);
+      
+      const s: ScoreState = {
+        score: data.score,
+        matched: data.matched || [],
+        missing: data.missing || []
+      };
+      setAtsScore(s);
+      setScoreHistory([s]);
+      
+      if (data.logs) {
+        setAgentLogs(data.logs);
+      }
       setPhase("editor");
-      fetchScore(data.resume_text);
     } catch (err: any) {
       console.error(err);
-      setRefineError(err.message || "Generation failed. Please try again.");
+      setRefineError(err.message || "Optimization failed. Please try again.");
       setPhase("idle");
     }
   };
@@ -828,18 +882,19 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   // ===== PHASE: generating =====
   if (phase === "generating") {
     return (
-      <div className="flex flex-col items-center justify-center p-16 space-y-5 text-center">
+      <div className="flex flex-col items-center justify-center p-16 space-y-6 text-center">
         <div className="relative">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg animate-pulse" />
           <Loader2 className="w-7 h-7 text-white animate-spin absolute inset-0 m-auto" />
         </div>
-        <p className="text-base font-semibold text-slate-700">
-          Building your tailored resume for <span className="font-bold">{job.title}</span>…
-        </p>
-        <p className="text-sm text-slate-400 max-w-xs">
-          Restructuring into Professional Summary → Skills → Experience → Education.
-          This takes 30–90 seconds.
-        </p>
+        <div className="space-y-2">
+          <p className="text-base font-semibold text-slate-700 animate-pulse">
+            {loadingSteps[loadingStep]}
+          </p>
+          <p className="text-xs text-slate-400 max-w-xs">
+            The AI Optimization Agent is targeting a 95%+ ATS Score by aligning experiences and reframing projects. This takes 45–90 seconds.
+          </p>
+        </div>
       </div>
     );
   }
@@ -1144,6 +1199,7 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
                 activeKeyword={activeKeyword}
                 onKeywordClick={handleKeywordClick}
                 previousScore={previousScore}
+                agentLogs={agentLogs}
               />
             ) : (
               <div className="flex flex-col gap-3">

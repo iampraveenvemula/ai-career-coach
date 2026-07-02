@@ -12,6 +12,7 @@ from datetime import datetime
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: F401
+from services.ats_scorer import calculate_industry_score
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
@@ -158,7 +159,13 @@ async def _llm_rewrite(
     content = response.json().get("message", {}).get("content", "").strip()
     # Strip accidental markdown fences
     content = re.sub(r"^```(?:markdown|text)?|```$", "", content, flags=re.MULTILINE).strip()
-    return content
+    
+    # Clean double/redundant bullets
+    cleaned_lines = []
+    for line in content.splitlines():
+        cleaned_line = re.sub(r"^\s*[•\-\*·\s]+[•\-\*·]\s*", "• ", line)
+        cleaned_lines.append(cleaned_line)
+    return "\n".join(cleaned_lines)
 
 
 async def _llm_refine(current_resume: str, instruction: str) -> str:
@@ -403,3 +410,118 @@ def generate_docx_bytes(
     doc.save(buf)
     buf.seek(0)
     return buf.read(), filename
+
+
+# ---------------------------------------------------------------------------
+# AI Optimizer Agent
+# ---------------------------------------------------------------------------
+
+AGENT_OPTIMIZER_PROMPT = """You are a precision resume engineering agent. 
+You are given a current resume (structured in the canonical format), a job description, and a target set of missing keywords/skills that must be integrated.
+
+Your task is to reframe and enhance the projects and bullet points under the candidate's existing WORK EXPERIENCE section (and update the SKILLS list) to naturally weave in these missing skills and showcase matching project work or new engineering ideas relevant to the Job Description.
+
+Target skills/keywords to integrate: {missing_keywords}
+
+Rules:
+1. ONLY reframe or expand projects and bullet points under existing jobs.
+2. DO NOT change, invent, or fake any company names, universities, or work periods/dates.
+3. Write similar project ideas or accomplishments that you think best fit the job description to showcase the missing skills, but keep them grounded in realistic software/ML engineering context.
+4. Format all outputs exactly as the input resume:
+   - Headers: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, EDUCATION
+   - Bullet points starting with •
+   - Company headers starting with Company Name | Job Title | Dates
+5. Output ONLY the resume text. No explanations, introductory notes, or markdown fences.
+"""
+
+async def optimize_resume_agent(
+    resume_text: str,
+    job_description: str,
+    target_title: str = "",
+    max_passes: int = 3,
+    status_callback=None
+) -> tuple[str, int, list[dict]]:
+    """
+    Runs an iterative AI optimization agent to tailor projects and bullets,
+    evaluating the industry score after each pass until hitting >= 95% score.
+    """
+    logs = []
+    
+    # Pass 1: Initial rewrite/structuring
+    msg1 = "Pass 1: Initial structuring & alignment..."
+    if status_callback:
+        await status_callback(msg1)
+    print(f"[Optimizer Agent] {msg1}")
+         
+    # Exclude matched/missing in first pass to do structure and general alignment
+    current_resume = await _llm_rewrite(resume_text, job_description)
+    
+    # Calculate initial score
+    eval_result = calculate_industry_score(current_resume, job_description, target_title)
+    current_score = eval_result["score"]
+    logs.append({"pass": 1, "score": current_score, "breakdown": eval_result["breakdown"]})
+    
+    if current_score >= 95:
+        msg = f"Target score achieved: {current_score}%!"
+        if status_callback:
+            await status_callback(msg)
+        print(f"[Optimizer Agent] {msg}")
+        return current_resume, current_score, logs
+        
+    for p in range(2, max_passes + 2):
+        missing = eval_result["missing"]
+        targets = missing[:12]
+        
+        status_msg = f"Pass {p}: Enhancing project depth and semantic alignment..."
+        if targets:
+            status_msg = f"Pass {p}: Reframing projects & integrating missing skills ({', '.join(targets[:5])})..."
+            
+        if status_callback:
+            await status_callback(status_msg)
+        print(f"[Optimizer Agent] {status_msg}")
+            
+        target_instr = ", ".join(targets) if targets else "Enhance project technical details, distributed scaling, and ML infrastructure metrics matching the JD."
+            
+        # Call agent optimizer prompt
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": AGENT_OPTIMIZER_PROMPT.format(missing_keywords=target_instr)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"CURRENT RESUME:\n{current_resume}\n\n"
+                        f"TARGET JOB DESCRIPTION:\n{job_description}"
+                    )
+                }
+            ],
+            "stream": False
+        }
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            response.raise_for_status()
+            
+        content = response.json().get("message", {}).get("content", "").strip()
+        content = re.sub(r"^```(?:markdown|text)?|```$", "", content, flags=re.MULTILINE).strip()
+        
+        if len(content) > 100:
+            cleaned_lines = []
+            for line in content.splitlines():
+                cleaned_line = re.sub(r"^\s*[•\-\*·\s]+[•\-\*·]\s*", "• ", line)
+                cleaned_lines.append(cleaned_line)
+            current_resume = "\n".join(cleaned_lines)
+            
+        # Re-evaluate
+        eval_result = calculate_industry_score(current_resume, job_description, target_title)
+        current_score = eval_result["score"]
+        logs.append({"pass": p, "score": current_score, "breakdown": eval_result["breakdown"]})
+        
+        if current_score >= 95:
+            msg = f"Target score achieved in Pass {p}: {current_score}%!"
+            if status_callback:
+                await status_callback(msg)
+            print(f"[Optimizer Agent] {msg}")
+            break
+            
+    return current_resume, current_score, logs
