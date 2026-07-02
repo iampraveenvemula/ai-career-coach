@@ -568,27 +568,8 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   const [scoreHistory, setScoreHistory] = useState<ScoreState[]>([]);
   const [atsScore, setAtsScore] = useState<ScoreState | null>(null);
   const [agentLogs, setAgentLogs] = useState<any[]>([]);
-  const [loadingStep, setLoadingStep] = useState(0);
-  const loadingSteps = [
-    "Analyzing target role and company requirements...",
-    "Pass 1: Restructuring resume into canonical ATS sections...",
-    "Evaluating initial ATS score and identifying tech gaps...",
-    "Pass 2: Reframing experiences to project direct matches...",
-    "Validating semantic cosine similarity overlap...",
-    "Pass 3: Weaving missing skills into technical categories...",
-    "Running final compliance check and hitting target score..."
-  ];
-
-  useEffect(() => {
-    let interval: any;
-    if (phase === "generating") {
-      setLoadingStep(0);
-      interval = setInterval(() => {
-        setLoadingStep((s) => Math.min(s + 1, loadingSteps.length - 1));
-      }, 7000);
-    }
-    return () => clearInterval(interval);
-  }, [phase]);
+  const [isLiveOptimizing, setIsLiveOptimizing] = useState(false);
+  const [currentPassName, setCurrentPassName] = useState("");
 
   const [isScoringLoading, setIsScoringLoading] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
@@ -727,48 +708,79 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
     ? scoreHistory[scoreHistory.length - 2].score
     : null;
 
-  // Generate / regenerate
+  // Generate / regenerate (Frontend Orchestrated AI Agent)
   const handleGenerate = async () => {
     const rawResume = localStorage.getItem("resume_text");
     if (!rawResume) { setNoResume(true); return; }
     setNoResume(false);
-    setPhase("generating");
-    setActiveKeyword(null);
+    
+    // Switch to editor view immediately so the user can watch the edits live
+    setPhase("editor");
+    setIsLiveOptimizing(true);
     setAgentLogs([]);
+    setScoreHistory([]);
+    setAtsScore(null);
+    setActiveKeyword(null);
+    setRefineError(null);
+    
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/generate/optimize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resume_text: rawResume,
-          job_description: job.description_text,
-          job_title: job.title,
-          company: job.company,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Optimization failed");
+      let currentText = rawResume;
+      let lastMissing: string[] = [];
+      let accumulatedLogs: any[] = [];
+      const maxPasses = 4;
       
-      setResumeText(data.resume_text);
-      setHistory([data.resume_text]);
-      setScoreHistory([]);
-      
-      const s: ScoreState = {
-        score: data.score,
-        matched: data.matched || [],
-        missing: data.missing || []
-      };
-      setAtsScore(s);
-      setScoreHistory([s]);
-      
-      if (data.logs) {
-        setAgentLogs(data.logs);
+      for (let p = 1; p <= maxPasses; p++) {
+        let statusMsg = `Pass ${p}: Initial structuring & alignment...`;
+        if (p === 2) statusMsg = "Pass 2: Reframing projects with XYZ metrics...";
+        if (p === 3) statusMsg = "Pass 3: Integrating remaining target tech skills...";
+        if (p === 4) statusMsg = "Pass 4: Optimizing semantic similarity & details...";
+        
+        setCurrentPassName(statusMsg);
+        
+        const res = await fetch(`${API_BASE_URL}/api/v1/generate/optimize-pass`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            resume_text: currentText,
+            job_description: job.description_text,
+            job_title: job.title,
+            company: job.company,
+            pass_num: p,
+            missing_keywords: lastMissing
+          }),
+        });
+        
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `Optimization Pass ${p} failed`);
+        
+        // Update states immediately
+        currentText = data.resume_text;
+        setResumeText(currentText);
+        setHistory((prev) => [...prev, currentText]);
+        
+        const s: ScoreState = {
+          score: data.score,
+          matched: data.matched || [],
+          missing: data.missing || []
+        };
+        setAtsScore(s);
+        setScoreHistory((prev) => [...prev, s]);
+        lastMissing = data.missing || [];
+        
+        const logItem = { pass: p, score: data.score };
+        accumulatedLogs = [...accumulatedLogs, logItem];
+        setAgentLogs(accumulatedLogs);
+        
+        // Stop early if score target >= 95% is hit
+        if (data.score >= 95) {
+          break;
+        }
       }
-      setPhase("editor");
     } catch (err: any) {
       console.error(err);
       setRefineError(err.message || "Optimization failed. Please try again.");
-      setPhase("idle");
+    } finally {
+      setIsLiveOptimizing(false);
     }
   };
 
@@ -880,24 +892,7 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
   }
 
   // ===== PHASE: generating =====
-  if (phase === "generating") {
-    return (
-      <div className="flex flex-col items-center justify-center p-16 space-y-6 text-center">
-        <div className="relative">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg animate-pulse" />
-          <Loader2 className="w-7 h-7 text-white animate-spin absolute inset-0 m-auto" />
-        </div>
-        <div className="space-y-2">
-          <p className="text-base font-semibold text-slate-700 animate-pulse">
-            {loadingSteps[loadingStep]}
-          </p>
-          <p className="text-xs text-slate-400 max-w-xs">
-            The AI Optimization Agent is targeting a 95%+ ATS Score by aligning experiences and reframing projects. This takes 45–90 seconds.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // Removed full-screen loader to support live editor orchestration overlay
 
   // ===== PHASE: editor =====
   return (
@@ -1073,6 +1068,21 @@ export function ResumeStudio({ job, onClose }: { job: any; onClose: () => void }
                     <div className="bg-white border border-slate-200 rounded-2xl shadow-xl px-5 py-3 flex items-center gap-3">
                       <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
                       <span className="text-sm font-semibold text-slate-700">Applying refinement…</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Optimization Overlay */}
+                {isLiveOptimizing && (
+                  <div className="absolute inset-0 bg-white/75 z-10 flex flex-col items-center justify-center p-8 text-center backdrop-blur-[1px] pointer-events-none">
+                    <div className="bg-white border border-slate-150 rounded-2xl shadow-2xl px-6 py-5 max-w-sm space-y-3 pointer-events-auto">
+                      <div className="flex items-center gap-3 justify-center">
+                        <Loader2 className="w-5 h-5 text-indigo-650 animate-spin" />
+                        <span className="text-sm font-bold text-slate-800">{currentPassName}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        The AI agent is adapting your resume content live to match the Job Description. Watch the scores update on the right!
+                      </p>
                     </div>
                   </div>
                 )}

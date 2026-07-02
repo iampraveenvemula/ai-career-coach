@@ -7,7 +7,8 @@ from services.resume_builder import (
     _llm_rewrite,
     _llm_refine,
     generate_docx_bytes,
-    optimize_resume_agent
+    optimize_resume_agent,
+    optimize_pass_agent
 )
 
 router = APIRouter(
@@ -36,6 +37,14 @@ class OptimizeRequest(BaseModel):
     job_description: str
     job_title: str = ""
     company: str = ""
+
+class OptimizePassRequest(BaseModel):
+    resume_text: str
+    job_description: str
+    job_title: str = ""
+    company: str = ""
+    pass_num: int
+    missing_keywords: list[str] = None
 
 class RefineRequest(BaseModel):
     current_resume: str
@@ -125,6 +134,32 @@ async def api_optimize_resume(req: OptimizeRequest):
             "resume_text": optimized_text,
             "score": final_score,
             "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/optimize-pass")
+async def api_optimize_pass(req: OptimizePassRequest):
+    """
+    Executes a single pass of the AI optimizer agent and returns the updated text,
+    current ATS score, and matched/missing tech keywords.
+    """
+    try:
+        res = await optimize_pass_agent(
+            resume_text=req.resume_text,
+            job_description=req.job_description,
+            target_title=req.job_title,
+            pass_num=req.pass_num,
+            missing_keywords=req.missing_keywords
+        )
+        return {
+            "status": "success",
+            "resume_text": res["resume_text"],
+            "score": res["score"],
+            "matched": res["matched"],
+            "missing": res["missing"],
+            "breakdown": res["breakdown"]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

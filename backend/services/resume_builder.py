@@ -529,3 +529,68 @@ async def optimize_resume_agent(
             break
             
     return current_resume, current_score, logs
+
+
+async def optimize_pass_agent(
+    resume_text: str,
+    job_description: str,
+    target_title: str = "",
+    pass_num: int = 1,
+    missing_keywords: list[str] = None
+) -> dict:
+    """
+    Executes a single, targeted pass of the AI optimizer agent and returns
+    the resume text, score, and breakdown.
+    """
+    if pass_num == 1:
+        # Pass 1: Initial rewrite/structuring
+        current_resume = await _llm_rewrite(resume_text, job_description)
+    else:
+        # Pass 2+: Reframing experience projects & integrating missing skills
+        targets = missing_keywords[:12] if missing_keywords else []
+        target_instr = ", ".join(targets) if targets else "Enhance project technical details, distributed scaling, and ML infrastructure metrics matching the JD."
+        
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [
+                {"role": "system", "content": AGENT_OPTIMIZER_PROMPT.format(missing_keywords=target_instr)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"CURRENT RESUME:\n{resume_text}\n\n"
+                        f"TARGET JOB DESCRIPTION:\n{job_description}"
+                    )
+                }
+            ],
+            "stream": False
+        }
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            response.raise_for_status()
+            
+        content = response.json().get("message", {}).get("content", "").strip()
+        content = re.sub(r"^```(?:markdown|text)?|```$", "", content, flags=re.MULTILINE).strip()
+        
+        if len(content) > 100:
+            current_resume = content
+        else:
+            current_resume = resume_text
+            
+    # Clean double/redundant bullets
+    cleaned_lines = []
+    for line in current_resume.splitlines():
+        cleaned_line = re.sub(r"^\s*[•\-\*·\s]+[•\-\*·]\s*", "• ", line)
+        cleaned_lines.append(cleaned_line)
+    final_resume = "\n".join(cleaned_lines)
+    
+    # Calculate score
+    eval_result = calculate_industry_score(final_resume, job_description, target_title)
+    
+    return {
+        "resume_text": final_resume,
+        "score": eval_result["score"],
+        "matched": eval_result["matched"],
+        "missing": eval_result["missing"],
+        "breakdown": eval_result["breakdown"]
+    }
