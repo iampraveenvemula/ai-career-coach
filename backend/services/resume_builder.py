@@ -20,9 +20,10 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 # Prompts
 # ---------------------------------------------------------------------------
 
-STRUCTURE_PROMPT = """You are an expert resume writer. You will be given a candidate's raw resume
-and a job description. Your task is to produce a clean, ATS-optimised, 1–2 page resume in
-plain text with exactly the following four sections in this order:
+STRUCTURE_PROMPT = """You are an expert resume writer and ATS optimization specialist. 
+Your goal is to produce a clean, ATS-optimized, 1–2 page resume in plain text based on the candidate's raw resume and the target job description.
+
+Your output must have EXACTLY the following four sections in this order:
 
 PROFESSIONAL SUMMARY
 SKILLS
@@ -31,48 +32,47 @@ EDUCATION
 
 ---
 
-SECTION RULES:
+SECTION-BY-SECTION INSTRUCTIONS:
 
 PROFESSIONAL SUMMARY
-- Write 2–4 sentences that position the candidate for THIS specific role.
-- Reference the job title and 1–2 key requirements from the JD.
-- Draw only on facts present in the resume. Do NOT invent experience.
+- Write a highly compelling 2–4 sentence summary.
+- Start with a strong professional hook that incorporates the target job title (e.g., "Results-driven AI Engineer with 5+ years of experience...") and years of experience.
+- Directly highlight 2–3 core competencies or technical achievements that align with the most critical requirements of the Job Description.
+- Draw ONLY on facts present in the resume. Do NOT invent experience or metrics.
 
 SKILLS
-- List ALL technical and professional skills found in the candidate's resume.
-- Group into sub-categories where appropriate, e.g.:
-    Languages: Python, Java, SQL
-    Frameworks: React, FastAPI, Django
-    Tools & Platforms: AWS, Docker, Kubernetes, Git
-    Soft Skills: Team Leadership, Agile, Cross-functional Collaboration
-- Prioritise skills that appear in the job description by listing them first within each group.
+- List technical and professional skills present in the candidate's raw resume.
+- Group them logically into categories (e.g., Languages, Frameworks & Libraries, Tools & Platforms, Methodologies).
+- Within each category, prioritize the tools that appear in the job description or keyword targets by listing them first.
+- If the candidate has experience with a required skill but used a slightly different term in their original resume, normalize it to match the Job Description's keywords (e.g., if they wrote "Postgres" but the JD specifies "PostgreSQL", use "PostgreSQL").
 - Do NOT add skills the candidate does not have.
 
 EXPERIENCE
-- Include EVERY job from the resume. Do NOT drop any role.
-- Format each role exactly as:
+- Include EVERY job from the candidate's original resume. Do NOT drop any role.
+- Format each role header EXACTLY as:
     Company Name | Job Title | Start Month Year – End Month Year (or Present)
   followed by 3–5 bullet points starting with •
-- Each bullet: strong action verb + specific accomplishment with metrics where available.
-- Reword bullets to naturally incorporate JD keywords where the candidate's experience supports it.
-- Do NOT fabricate metrics or responsibilities not in the original resume.
+- For each bullet point, follow the STAR/XYZ formula: [Action Verb] + [Context/Core Task] + [Action taken using specific tech/skills] + [Quantified Result/Metric if available].
+- Rewrite the focus of the bullets to highlight tasks and accomplishments that directly match the core responsibilities and tech stack listed in the Job Description.
+- Use strong, active verbs (e.g., "Engineered", "Optimized", "Architected", "Spearheaded"). Avoid passive phrases like "Responsible for" or "Assisted in".
+- Do NOT invent metrics or responsibilities not in the original resume.
 
 EDUCATION
 - List degrees in reverse chronological order.
 - Format: Degree, Field of Study | Institution | Year
 - Keep it brief — 1–2 lines per degree.
-- If there are certifications or relevant coursework, list them here on a separate line.
+- Include certifications or relevant coursework on a separate line under the degree if present.
 
 ---
 
-FORMATTING RULES (critical — the output is parsed by code):
+FORMATTING RULES (CRITICAL — Output is parsed by code):
 - Section headers MUST be exactly: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, EDUCATION (ALL-CAPS, no other text on that line)
 - Job entry headers MUST use the pipe separator: Company | Title | Date
 - Bullet points MUST start with • (bullet character)
-- Blank lines between sections and between job entries
-- Output ONLY the resume text. No markdown fences (no ```) no explanations, no preamble.
-- First line of output is the candidate's full name (if found in resume), otherwise skip.
-- Second line (if name present): contact info on one line, e.g.: email@example.com | LinkedIn | City, Country
+- Ensure a single blank line between sections and between job entries
+- Output ONLY the plain resume text. Do NOT wrap in markdown fences (no ```), and do NOT include any preamble, explanations, or introductory/concluding notes.
+- The first line of output must be the candidate's Full Name (if found in the resume).
+- The second line must contain contact info on one line (e.g., email | phone | LinkedIn | location).
 """
 
 REFINE_PROMPT = """You are a precise resume line editor.
@@ -99,25 +99,45 @@ async def build_tailored_resume_docx(
     candidate_name: str = "",
     job_title: str = "",
     company: str = "",
+    matched_keywords: list[str] = None,
+    missing_keywords: list[str] = None
 ) -> tuple[bytes, str]:
     """
     Structures + keyword-aligns the resume via LLM, then renders as DOCX.
     Returns (docx_bytes, filename).
     """
     if job_description:
-        tailored_text = await _llm_rewrite(resume_text, job_description)
+        tailored_text = await _llm_rewrite(resume_text, job_description, matched_keywords, missing_keywords)
     else:
         tailored_text = resume_text
     return generate_docx_bytes(tailored_text, candidate_name, job_title, company)
 
 
-async def _llm_rewrite(resume_text: str, job_description: str) -> str:
+async def _llm_rewrite(
+    resume_text: str,
+    job_description: str,
+    matched_keywords: list[str] = None,
+    missing_keywords: list[str] = None
+) -> str:
     """
     Single-pass LLM call that both restructures the resume into the canonical
     4-section format AND aligns keywords to the job description.
     """
-    resume_truncated = resume_text[:5000] if len(resume_text) > 5000 else resume_text
-    jd_truncated = job_description[:2000] if len(job_description) > 2000 else job_description
+    resume_truncated = resume_text[:8000] if len(resume_text) > 8000 else resume_text
+    jd_truncated = job_description[:8000] if len(job_description) > 8000 else job_description
+
+    user_content = (
+        f"CANDIDATE'S RESUME:\n{resume_truncated}\n\n"
+        f"JOB DESCRIPTION:\n{jd_truncated}\n\n"
+    )
+    
+    if matched_keywords or missing_keywords:
+        user_content += "TARGET KEYWORDS TO NATURALLY INTEGRATE (ONLY IF CANDIDATE HAS RELEVANT EXPERIENCE/SKILLS):\n"
+        if matched_keywords:
+            user_content += f"- Already matched keywords: {', '.join(matched_keywords)}\n"
+        if missing_keywords:
+            user_content += f"- Missing keywords to incorporate: {', '.join(missing_keywords)}\n"
+        user_content += "\n"
 
     payload = {
         "model": OLLAMA_MODEL,
@@ -125,10 +145,7 @@ async def _llm_rewrite(resume_text: str, job_description: str) -> str:
             {"role": "system", "content": STRUCTURE_PROMPT},
             {
                 "role": "user",
-                "content": (
-                    f"CANDIDATE'S RESUME:\n{resume_truncated}\n\n"
-                    f"JOB DESCRIPTION:\n{jd_truncated}"
-                ),
+                "content": user_content,
             },
         ],
         "stream": False,

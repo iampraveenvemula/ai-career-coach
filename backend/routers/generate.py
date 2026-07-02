@@ -54,6 +54,29 @@ async def api_generate_cover_letter(req: CoverLetterRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def extract_keywords_gap(resume_text: str, job_description: str) -> tuple[list[str], list[str]]:
+    import re
+    def tokenize(text: str) -> set[str]:
+        words = re.findall(r"[a-zA-Z][a-zA-Z0-9+#./_-]{2,}", text.lower())
+        tokens = set(words)
+        word_list = [w for w in words if len(w) > 3]
+        for i in range(len(word_list) - 1):
+            tokens.add(f"{word_list[i]} {word_list[i+1]}")
+        return tokens
+
+    jd_tokens   = tokenize(job_description)
+    res_tokens  = tokenize(resume_text)
+
+    STOP = {"the", "and", "for", "with", "this", "that", "will", "have",
+            "are", "you", "your", "our", "their", "from", "not", "but",
+            "has", "can", "all", "any", "also", "more", "such", "been"}
+    jd_keywords = {t for t in jd_tokens if t not in STOP and len(t) > 3}
+
+    matched = sorted(jd_keywords & res_tokens)
+    missing = sorted(jd_keywords - res_tokens)
+    return matched, missing
+
+
 @router.post("/tailored-text")
 async def api_generate_tailored_text(req: TailoredTextRequest):
     """
@@ -61,7 +84,13 @@ async def api_generate_tailored_text(req: TailoredTextRequest):
     the updated text to be rendered interactively in the portal.
     """
     try:
-        tailored_text = await _llm_rewrite(req.resume_text, req.job_description)
+        matched, missing = extract_keywords_gap(req.resume_text, req.job_description)
+        tailored_text = await _llm_rewrite(
+            req.resume_text,
+            req.job_description,
+            matched_keywords=matched[:15],
+            missing_keywords=missing[:25]
+        )
         return {"status": "success", "resume_text": tailored_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
