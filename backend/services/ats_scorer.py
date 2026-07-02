@@ -1,8 +1,9 @@
 """
 Industry-grade ATS scoring engine that computes:
-1. Keyword match density (40% weight) against a pre-compiled skills database
-2. Semantic cosine similarity using embeddings (40% weight)
-3. Target title and role fit (20% weight)
+1. Keyword match density (30% weight) against a pre-compiled skills database
+2. Semantic cosine similarity using embeddings (30% weight)
+3. Target title and role fit (10% weight)
+4. Recruiter Quality & Impact Audit (30% weight) checking active verbs, metrics, and bullet depth
 """
 
 import re
@@ -31,6 +32,13 @@ TECH_WORDS = {
     
     # Core Engineering Concepts & Methodologies
     "agile", "scrum", "kanban", "oop", "design patterns", "unit testing", "tdd", "system design", "scalability", "high availability", "concurrency", "multithreading", "load balancing", "api gateway", "distributed systems", "distributed training", "parallel processing", "data structures", "algorithms"
+}
+
+STRONG_VERBS = {
+    "spearheaded", "architected", "engineered", "designed", "optimized", "scaled", 
+    "built", "developed", "implemented", "pioneered", "led", "managed", "refactored", 
+    "automated", "formulated", "created", "deployed", "launched", "accelerated", 
+    "overhauled", "structured", "customized", "integrated", "orchestrated"
 }
 
 def tokenize(text: str) -> set[str]:
@@ -134,9 +142,58 @@ def calculate_title_fit(resume_text: str, target_title: str) -> int:
     return min(100, max(50, boosted_fit))
 
 
+def calculate_quality_audit(resume_text: str) -> dict:
+    """
+    Performs a recruiter quality audit checking for metric density, verb usage, and bullet depth.
+    Returns a score out of 100 and breakdown metrics.
+    """
+    # Extract experience bullet lines
+    bullets = [line.strip().lstrip("•-*· ").strip() for line in resume_text.splitlines() if line.strip().startswith(("•", "-", "*", "·"))]
+    
+    if not bullets:
+        return {"score": 40, "metric_density": 0, "verb_density": 0, "depth_density": 0}
+        
+    metric_count = 0
+    verb_count = 0
+    depth_count = 0
+    
+    for b in bullets:
+        # Check depth (character length >= 45)
+        if len(b) >= 45:
+            depth_count += 1
+            
+        # Check metrics (contains a number)
+        if re.search(r"\b\d+\b|%|\d+x|\d+k|\d+m", b, re.IGNORECASE):
+            metric_count += 1
+            
+        # Check starting verb
+        first_word = re.findall(r"^[a-zA-Z]+", b)
+        if first_word and first_word[0].lower() in STRONG_VERBS:
+            verb_count += 1
+            
+    total = len(bullets)
+    metric_pct = int((metric_count / total) * 100)
+    verb_pct = int((verb_count / total) * 100)
+    depth_pct = int((depth_count / total) * 100)
+    
+    # Composite audit score (40% metrics, 40% verbs, 20% depth)
+    audit_score = min(100, int((metric_pct * 0.4) + (verb_pct * 0.4) + (depth_pct * 0.2)))
+    
+    # Recruiter minimum baseline: if no metrics are present, penalize heavily
+    if metric_count == 0:
+        audit_score = max(0, audit_score - 30)
+        
+    return {
+        "score": audit_score,
+        "metric_density": metric_pct,
+        "verb_density": verb_pct,
+        "depth_density": depth_pct
+    }
+
+
 def calculate_industry_score(resume_text: str, jd_text: str, target_title: str = "") -> dict:
     """
-    Computes a composite industry-grade ATS score.
+    Computes a composite industry-grade ATS score with a Recruiter Quality Audit.
     Returns: { score: int, matched: list[str], missing: list[str], breakdown: dict }
     """
     kw_score, matched, missing = calculate_keyword_match(resume_text, jd_text)
@@ -146,7 +203,10 @@ def calculate_industry_score(resume_text: str, jd_text: str, target_title: str =
     
     title_score = calculate_title_fit(resume_text, target_title)
     
-    composite = (kw_score * 0.4) + (semantic_score * 0.4) + (title_score * 0.2)
+    audit_res = calculate_quality_audit(resume_text)
+    
+    # Weights: 30% Keywords, 30% Semantic Embeddings, 10% Title Fit, 30% Quality Audit
+    composite = (kw_score * 0.3) + (semantic_score * 0.3) + (title_score * 0.1) + (audit_res["score"] * 0.3)
     final_score = min(100, max(0, int(composite)))
     
     return {
@@ -156,6 +216,7 @@ def calculate_industry_score(resume_text: str, jd_text: str, target_title: str =
         "breakdown": {
             "keyword_density": kw_score,
             "semantic_similarity": semantic_score,
-            "title_fit": title_score
+            "title_fit": title_score,
+            "quality_audit": audit_res["score"]
         }
     }

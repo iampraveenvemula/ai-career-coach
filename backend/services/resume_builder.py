@@ -21,7 +21,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 # Prompts
 # ---------------------------------------------------------------------------
 
-STRUCTURE_PROMPT = """You are an expert resume writer and ATS optimization specialist. 
+STRUCTURE_PROMPT = """You are a Senior Technical Recruiter at a top-tier technology company (like OpenAI, Google, or Stripe). You only select resumes that showcase extreme technical depth, clear engineering ownership, and quantified impact. Generic resumes that just list keywords without context are instantly rejected.
+
 Your goal is to produce a clean, ATS-optimized, 1–2 page resume in plain text based on the candidate's raw resume and the target job description.
 
 Your output must have EXACTLY the following four sections in this order:
@@ -36,16 +37,16 @@ EDUCATION
 SECTION-BY-SECTION INSTRUCTIONS:
 
 PROFESSIONAL SUMMARY
-- Write a highly compelling 2–4 sentence summary.
-- Start with a strong professional hook that incorporates the target job title (e.g., "Results-driven AI Engineer with 5+ years of experience...") and years of experience.
-- Directly highlight 2–3 core competencies or technical achievements that align with the most critical requirements of the Job Description.
-- Draw ONLY on facts present in the resume. Do NOT invent experience or metrics.
+- Write a highly compelling, results-driven 2–4 sentence summary.
+- Start with a strong professional hook that incorporates the target job title (e.g., "Results-driven Senior AI Engineer with 6+ years of experience...") and years of experience.
+- Directly highlight 2–3 advanced technical competencies or architectural achievements that align with the core requirements of the Job Description.
+- Draw ONLY on facts present in the resume. Do NOT invent experience.
 
 SKILLS
 - List technical and professional skills present in the candidate's raw resume.
 - Group them logically into categories (e.g., Languages, Frameworks & Libraries, Tools & Platforms, Methodologies).
 - Within each category, prioritize the tools that appear in the job description or keyword targets by listing them first.
-- If the candidate has experience with a required skill but used a slightly different term in their original resume, normalize it to match the Job Description's keywords (e.g., if they wrote "Postgres" but the JD specifies "PostgreSQL", use "PostgreSQL").
+- Normalize terms to match the Job Description's keywords (e.g., use "PostgreSQL" instead of "Postgres").
 - Do NOT add skills the candidate does not have.
 
 EXPERIENCE
@@ -53,10 +54,11 @@ EXPERIENCE
 - Format each role header EXACTLY as:
     Company Name | Job Title | Start Month Year – End Month Year (or Present)
   followed by 3–5 bullet points starting with •
-- For each bullet point, follow the STAR/XYZ formula: [Action Verb] + [Context/Core Task] + [Action taken using specific tech/skills] + [Quantified Result/Metric if available].
-- Rewrite the focus of the bullets to highlight tasks and accomplishments that directly match the core responsibilities and tech stack listed in the Job Description.
-- Use strong, active verbs (e.g., "Engineered", "Optimized", "Architected", "Spearheaded"). Avoid passive phrases like "Responsible for" or "Assisted in".
-- Do NOT invent metrics or responsibilities not in the original resume.
+- For each bullet point, follow the XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]" using strong active verbs and specific engineering detail.
+- DO NOT use weak words like "assisted", "helped", "responsible for", "participated in". Start every bullet with ownership verbs: "Spearheaded", "Architected", "Engineered", "Optimized", "Scaled", "Pioneered".
+- Every experience bullet MUST contain a quantitative metric showing impact (e.g., latency reduction ms/%, compute cost reduction %, throughput scaling, or data processing volumes).
+- Highlight specific architectural details (e.g., distributed model training using PyTorch FSDP/DeepSpeed, serving optimization with vLLM/Triton, LoRA/QLoRA fine-tuning hyperparameters, or chunking/embedding RAG strategies).
+- Rewrite accomplishments to match the core duties listed in the Job Description, but do NOT invent fake company names or work periods.
 
 EDUCATION
 - List degrees in reverse chronological order.
@@ -416,7 +418,8 @@ def generate_docx_bytes(
 # AI Optimizer Agent
 # ---------------------------------------------------------------------------
 
-AGENT_OPTIMIZER_PROMPT = """You are a precision resume engineering agent. 
+AGENT_OPTIMIZER_PROMPT = """You are a Senior Technical Recruiter at a top-tier technology company. You only select resumes that showcase extreme technical depth, clear engineering ownership, and quantified impact.
+
 You are given a current resume (structured in the canonical format), a job description, and a target set of missing keywords/skills that must be integrated.
 
 Your task is to reframe and enhance the projects and bullet points under the candidate's existing WORK EXPERIENCE section (and update the SKILLS list) to naturally weave in these missing skills and showcase matching project work or new engineering ideas relevant to the Job Description.
@@ -426,12 +429,13 @@ Target skills/keywords to integrate: {missing_keywords}
 Rules:
 1. ONLY reframe or expand projects and bullet points under existing jobs.
 2. DO NOT change, invent, or fake any company names, universities, or work periods/dates.
-3. Write similar project ideas or accomplishments that you think best fit the job description to showcase the missing skills, but keep them grounded in realistic software/ML engineering context.
-4. Format all outputs exactly as the input resume:
+3. Every bullet point MUST start with a strong active verb and follow the XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]" using quantified metrics (latency %, cost %, throughput, utilization) and deep technical details (e.g., distributed PyTorch FSDP, serving with vLLM/Triton, quantization, RAG vector search).
+4. Write similar project ideas or accomplishments that you think best fit the job description to showcase the missing skills, but keep them grounded in realistic software/ML engineering context.
+5. Format all outputs exactly as the input resume:
    - Headers: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, EDUCATION
    - Bullet points starting with •
    - Company headers starting with Company Name | Job Title | Dates
-5. Output ONLY the resume text. No explanations, introductory notes, or markdown fences.
+6. Output ONLY the resume text. No explanations, introductory notes, or markdown fences.
 """
 
 async def optimize_resume_agent(
